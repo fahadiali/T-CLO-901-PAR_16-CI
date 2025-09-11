@@ -1,0 +1,254 @@
+project:
+  name: "Azure Cloud Infrastructure Comparison - IaaS vs PaaS"
+  type: "Infrastructure as Code (IaC) Project"
+  version: "1.0.0"
+  description: "Comparaison approfondie des modèles d'infrastructure cloud IaaS et PaaS sur Microsoft Azure avec implémentation complète IaC"
+  
+metadata:
+  created_date: "2024-01-XX"
+  author: "Étudiant Epitech"
+  course: "Cloud Infrastructure Management"
+  semester: "Advanced"
+  
+technologies_stack:
+  infrastructure_provisioning:
+    - name: "Terraform"
+      version: ">= 1.0"
+      purpose: "Infrastructure as Code provisioning"
+      files: ["main.tf", "variables.tf", "outputs.tf", "terraform.tfvars"]
+  
+  configuration_management:
+    - name: "Ansible"
+      version: ">= 2.9"
+      purpose: "Configuration management and application deployment"
+      playbooks: ["site.yml", "vm-setup.yml", "app-deploy.yml"]
+  
+  containerization:
+    - name: "Docker"
+      version: ">= 20.10"
+      purpose: "Application containerization"
+      files: ["Dockerfile", "docker-compose.yml"]
+  
+  cloud_platform:
+    - name: "Microsoft Azure"
+      services:
+        - "Azure Virtual Machines (IaaS)"
+        - "Azure Web Apps (PaaS)"
+        - "Azure Resource Groups"
+        - "Azure Storage Accounts"
+        - "Azure Virtual Networks"
+        - "Azure Load Balancers"
+  
+  ci_cd:
+    - name: "GitHub Actions"
+      purpose: "Automated deployment and testing"
+      workflows: ["deploy-iaas.yml", "deploy-paas.yml", "stress-tests.yml"]
+
+project_objectives:
+  primary_goals:
+    - "Déployer une application hautement disponible sur Azure"
+    - "Comparer les performances IaaS vs PaaS (coût, scalabilité, fiabilité)"
+    - "Implémenter Infrastructure as Code pour reproductibilité totale"
+    - "Automatiser le processus de déploiement (spin up/tear down)"
+    - "Gérer différents environnements avec isolation des états"
+  
+  technical_requirements:
+    iaas_deployment:
+      - "Machines virtuelles Azure avec OS choisi"
+      - "Configuration automatique via Ansible"
+      - "Déploiement d'application conteneurisée"
+      - "Mise en place de haute disponibilité"
+      - "Monitoring et alertes"
+    
+    paas_deployment:
+      - "Azure Web Apps pour déploiement d'application"
+      - "Configuration automatique via Terraform"
+      - "Intégration CI/CD avec GitHub Actions"
+      - "Scaling automatique"
+      - "Monitoring intégré"
+    
+    testing_and_comparison:
+      - "Tests de stress automatisés"
+      - "Mesure des temps de réponse"
+      - "Analyse des codes de statut HTTP"
+      - "Comparaison des coûts (consommation + prix publics)"
+      - "Évaluation de la scalabilité"
+
+architecture_design:
+  iaas_architecture:
+    components:
+      - "Azure Resource Group (isolé par environnement)"
+      - "Virtual Network avec subnets"
+      - "Virtual Machines (Linux/Windows selon choix)"
+      - "Load Balancer pour haute disponibilité"
+      - "Storage Account pour données persistantes"
+      - "Network Security Groups pour sécurité"
+      - "Public IP addresses"
+    
+    deployment_flow:
+      - "Terraform provisionne l'infrastructure"
+      - "Ansible configure les VMs"
+      - "Docker déploie l'application"
+      - "Tests de validation automatiques"
+  
+  paas_architecture:
+    components:
+      - "Azure Resource Group"
+      - "App Service Plan"
+      - "Web App (Linux/Windows)"
+      - "Application Insights pour monitoring"
+      - "Azure Container Registry (optionnel)"
+    
+    deployment_flow:
+      - "Terraform provisionne les services PaaS"
+      - "GitHub Actions build et déploie l'image Docker"
+      - "Tests de validation automatiques"
+
+environments_management:
+  environments:
+    - name: "development"
+      purpose: "Développement et tests"
+      resources: "Minimales (1 VM, Basic App Service)"
+      auto_shutdown: "Oui (18h00)"
+    
+    - name: "staging"
+      purpose: "Tests d'intégration et validation"
+      resources: "Intermédiaires (2 VMs, Standard App Service)"
+      auto_shutdown: "Oui (20h00)"
+    
+    - name: "production"
+      purpose: "Environnement de production simulé"
+      resources: "Complètes (3+ VMs, Premium App Service)"
+      auto_shutdown: "Non (manuel)"
+  
+  state_management:
+    backend: "Azure Storage Account"
+    isolation: "Par environnement et par type (iaas/paas)"
+    locking: "Azure Blob Storage locks"
+    versioning: "State file versioning activé"
+
+best_practices:
+  resource_management:
+    - "Conventions de nommage strictes (env-type-resource-instance)"
+    - "Étiquetage systématique (Environment, Owner, CostCenter, Project)"
+    - "Limitation des ressources selon les quotas Azure"
+    - "Arrêt automatique des VMs en fin de journée"
+    - "Monitoring des coûts en temps réel"
+  
+  security_compliance:
+    - "Network Security Groups restrictifs"
+    - "Authentification Azure AD"
+    - "Secrets management via Azure Key Vault"
+    - "Audit logs activés"
+    - "Backup automatique des configurations"
+  
+  code_quality:
+    - "Validation Terraform avec terraform validate"
+    - "Formatage automatique avec terraform fmt"
+    - "Tests Ansible avec molecule"
+    - "Linting Docker avec hadolint"
+    - "Documentation automatique"
+
+testing_strategy:
+  stress_testing:
+    tools: ["Apache Bench (ab)", "JMeter", "Artillery"]
+    metrics:
+      - "Response time (p50, p95, p99)"
+      - "Throughput (requests/second)"
+      - "Error rate"
+      - "Resource utilization (CPU, Memory, Network)"
+    
+    scenarios:
+      - "Load test (utilisateurs normaux)"
+      - "Stress test (charge maximale)"
+      - "Spike test (pics de trafic)"
+      - "Endurance test (charge prolongée)"
+  
+  cost_analysis:
+    metrics:
+      - "Coût par heure/jour/mois"
+      - "Coût par requête"
+      - "Coût par utilisateur simultané"
+      - "Coût de maintenance"
+    
+    comparison_criteria:
+      - "Coût total d'infrastructure"
+      - "Coût de maintenance et opérations"
+      - "Coût de scaling"
+      - "ROI (Return on Investment)"
+
+automation_workflows:
+  github_actions:
+    workflows:
+      - name: "deploy-iaas"
+        triggers: ["push to main", "pull request"]
+        steps: ["terraform plan", "terraform apply", "ansible playbook", "smoke tests"]
+      
+      - name: "deploy-paas"
+        triggers: ["push to main", "pull request"]
+        steps: ["docker build", "terraform plan", "terraform apply", "smoke tests"]
+      
+      - name: "stress-tests"
+        triggers: ["schedule (daily)", "manual"]
+        steps: ["deploy test env", "run stress tests", "generate reports", "cleanup"]
+      
+      - name: "destroy-environments"
+        triggers: ["schedule (weekend)", "manual"]
+        steps: ["terraform destroy", "cleanup resources", "cost report"]
+
+deliverables:
+  documentation:
+    - "Guide de déploiement IaaS complet"
+    - "Guide de déploiement PaaS complet"
+    - "Procédures de redéploiement d'environnement"
+    - "Best practices de gestion des ressources"
+    - "Rapport de comparaison IaaS vs PaaS"
+    - "Analyse des coûts détaillée"
+  
+  code_repositories:
+    - "Infrastructure Terraform (modules réutilisables)"
+    - "Playbooks Ansible (configuration management)"
+    - "Dockerfiles et docker-compose"
+    - "Scripts d'automatisation"
+    - "Workflows GitHub Actions"
+  
+  monitoring_dashboards:
+    - "Dashboard de performance IaaS"
+    - "Dashboard de performance PaaS"
+    - "Dashboard de coûts"
+    - "Alertes automatiques"
+
+bonus_features:
+  advanced_automation:
+    - "Terragrunt pour déploiement multi-environnements"
+    - "Azure VM Templates pour déploiements rapides"
+    - "Monitoring avancé avec Azure Monitor"
+    - "Alertes proactives pour anomalies"
+  
+  optimization:
+    - "Auto-scaling basé sur les métriques"
+    - "Optimisation des coûts avec Azure Cost Management"
+    - "Backup et disaster recovery"
+    - "Blue-green deployments"
+
+project_timeline:
+  phase_1: "Setup et configuration de base (1-2 semaines)"
+  phase_2: "Déploiement IaaS avec Terraform/Ansible (2-3 semaines)"
+  phase_3: "Déploiement PaaS avec Azure Web Apps (1-2 semaines)"
+  phase_4: "Tests de stress et comparaisons (1-2 semaines)"
+  phase_5: "Automatisation et CI/CD (1-2 semaines)"
+  phase_6: "Documentation et bonus features (1 semaine)"
+
+success_criteria:
+  technical:
+    - "Déploiement automatique fonctionnel (IaaS et PaaS)"
+    - "Tests de stress automatisés et rapportés"
+    - "Comparaison de coûts documentée"
+    - "Redéploiement d'environnement en < 30 minutes"
+    - "Zero-downtime deployments"
+  
+  business:
+    - "ROI positif démontré"
+    - "Scalabilité prouvée par les tests"
+    - "Documentation complète et utilisable"
+    - "Processus reproductible par d'autres équipes"
