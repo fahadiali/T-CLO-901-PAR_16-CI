@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: app-mysql
+    command: ["--default-authentication-plugin=mysql_native_password"]
+    environment:
+      - MYSQL_DATABASE=laravel
+      - MYSQL_USER=laravel
+      - MYSQL_PASSWORD=secret
+      - MYSQL_ROOT_PASSWORD=rootsecret
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - appnet
+
+  app:
+    build:
+      context: ./sample-app-master
+      dockerfile: Dockerfile
+    container_name: app-web
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+      # APP_KEY sera générée au démarrage si absente
+      - DB_CONNECTION=mysql
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_DATABASE=laravel
+      - DB_USERNAME=laravel
+      - DB_PASSWORD=secret
+    ports:
+      - "80:80"
+    networks:
+      - appnet
+    # Génère la clé, exécute les migrations puis lance Apache
+    command: >-
+      bash -lc "
+      php artisan key:generate --force || true &&
+      php artisan migrate --force || true &&
+      apache2-foreground
+      "
+
+volumes:
+  db_data:
+
+networks:
+  appnet:
+    driver: bridge
+
+
