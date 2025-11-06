@@ -35,6 +35,17 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Set Azure Subscription
+        id: set_subscription
+        run: |
+          # Extraire l'ID d'abonnement depuis les credentials
+          SUBSCRIPTION_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | grep -o '"subscriptionId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          echo "subscription_id=$SUBSCRIPTION_ID" >> $GITHUB_OUTPUT
+          echo "ARM_SUBSCRIPTION_ID=$SUBSCRIPTION_ID" >> $GITHUB_ENV
+          echo "Subscription ID: $SUBSCRIPTION_ID"
+          # Définir l'abonnement actif dans Azure CLI
+          az account set --subscription "$SUBSCRIPTION_ID"
+
       - name: Generate SSH Key Pair
         id: ssh_key
         run: |
@@ -56,15 +67,20 @@ jobs:
 
       - name: Terraform Init
         working-directory: terraform/iaas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
         run: terraform init
 
       - name: Terraform Validate
         working-directory: terraform/iaas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
         run: terraform validate
 
       - name: Terraform Plan
         working-directory: terraform/iaas
         env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
           TF_VAR_ssh_public_key: ${{ steps.ssh_key.outputs.public_key }}
           TF_VAR_ssh_private_key: ${{ steps.ssh_key.outputs.private_key }}
         run: terraform plan -out=tfplan
@@ -72,6 +88,7 @@ jobs:
       - name: Terraform Apply
         working-directory: terraform/iaas
         env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
           TF_VAR_ssh_public_key: ${{ steps.ssh_key.outputs.public_key }}
           TF_VAR_ssh_private_key: ${{ steps.ssh_key.outputs.private_key }}
         run: terraform apply -auto-approve tfplan
@@ -129,12 +146,15 @@ jobs:
       - name: Terraform Init (for destroy)
         if: always()
         working-directory: terraform/iaas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
         run: terraform init
 
       - name: Terraform Destroy
         if: always()
         working-directory: terraform/iaas
         env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
           TF_VAR_ssh_public_key: ${{ steps.ssh_key.outputs.public_key }}
           TF_VAR_ssh_private_key: ${{ steps.ssh_key.outputs.private_key }}
         run: terraform destroy -auto-approve
