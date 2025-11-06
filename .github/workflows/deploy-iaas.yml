@@ -158,22 +158,6 @@ jobs:
           
           echo "All smoke tests passed!"
 
-      - name: Terraform Init (for destroy)
-        if: always()
-        working-directory: terraform/iaas
-        env:
-          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
-        run: terraform init
-
-      - name: Terraform Destroy
-        if: always()
-        working-directory: terraform/iaas
-        env:
-          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
-          TF_VAR_ssh_public_key: ${{ steps.ssh_key.outputs.public_key }}
-          TF_VAR_ssh_private_key: ${{ steps.ssh_key.outputs.private_key }}
-        run: terraform destroy -auto-approve
-
       - name: Cleanup Terraform files
         if: always()
         working-directory: terraform/iaas

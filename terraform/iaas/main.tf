@@ -14,10 +14,6 @@ terraform {
       source  = "hashicorp/null"
       version = ">= 3.2.0"
     }
-    time = {
-      source  = "hashicorp/time"
-      version = ">= 0.9.0"
-    }
   }
 }
 
@@ -46,19 +42,11 @@ resource "azurerm_virtual_network" "vnet" {
   address_space       = ["10.10.0.0/16"]
 }
 
-# Attendre que le VNet soit complètement disponible
-resource "time_sleep" "wait_for_vnet" {
-  depends_on = [azurerm_virtual_network.vnet]
-  create_duration = "10s"
-}
-
 resource "azurerm_subnet" "subnet" {
   name                 = "subnet-app"
   resource_group_name  = data.azurerm_resource_group.target.name
   virtual_network_name = azurerm_virtual_network.vnet.name
   address_prefixes     = ["10.10.1.0/24"]
-
-  depends_on = [time_sleep.wait_for_vnet]
 }
 
 resource "azurerm_public_ip" "vm" {
