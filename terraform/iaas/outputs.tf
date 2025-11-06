@@ -1,4 +1,5 @@
 # Outputs Terraform pour le déploiement IaaS
+# Redéploiement après nettoyage du resource group
 output "public_ip" {
   description = "Adresse IP publique de la VM"
   value       = azurerm_public_ip.vm.ip_address
