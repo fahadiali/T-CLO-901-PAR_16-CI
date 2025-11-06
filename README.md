@@ -43,13 +43,9 @@ az account list --output table
 az account set --subscription "NOM_DE_VOTRE_ABONNEMENT"
 ```
 
-### 3. Créer le Resource Group
+### 3. Permissions Azure
 
-Le Resource Group est un conteneur logique pour vos ressources Azure. Créez-le si nécessaire :
-
-```bash
-az group create --name rg-par_16 --location westeurope
-```
+Le Resource Group sera créé automatiquement par Terraform dans la région `francecentral`. Assurez-vous d'avoir les permissions nécessaires pour créer des ressources dans votre abonnement Azure.
 
 ### 4. Installer Terraform
 
@@ -127,6 +123,7 @@ Ce dossier contient la configuration Terraform pour créer l'infrastructure Azur
 **Rôle** : Définit toutes les ressources Azure à créer.
 
 **Contenu** :
+- **Resource Group** : Créé automatiquement dans la région `francecentral`
 - **Réseau virtuel (VNet)** : Un réseau privé pour isoler votre VM
 - **Subnet** : Une sous-réseau dans le VNet pour la VM
 - **Adresse IP publique** : Permet d'accéder à la VM depuis Internet
@@ -227,19 +224,19 @@ Pour que GitHub Actions puisse déployer sur Azure, vous devez créer un Service
 #### Étape 1 : Créer un Service Principal Azure
 
 ```bash
+# Récupérer votre subscription ID
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+
+# Créer le Service Principal avec permissions au niveau de l'abonnement
 az ad sp create-for-rbac --name "github-actions-iaas" \
   --role contributor \
-  --scopes /subscriptions/VOTRE_SUBSCRIPTION_ID/resourceGroups/rg-par_16 \
+  --scopes /subscriptions/$SUBSCRIPTION_ID \
   --sdk-auth
 ```
 
 Cette commande affiche un JSON avec les credentials. **Copiez ce JSON**, vous en aurez besoin pour l'étape suivante.
 
-**Important** : Remplacez `VOTRE_SUBSCRIPTION_ID` par votre ID d'abonnement Azure. Vous pouvez le trouver avec :
-
-```bash
-az account show --query id -o tsv
-```
+**Important** : Le Service Principal doit avoir les permissions au niveau de l'abonnement pour pouvoir créer le Resource Group automatiquement.
 
 #### Étape 2 : Ajouter le secret dans GitHub
 
@@ -259,17 +256,21 @@ Le workflow `.github/workflows/deploy-iaas.yml` s'exécute automatiquement à ch
 
 **Étapes du workflow** :
 
-1. **Validation Terraform** : Vérifie le formatage et la syntaxe
-2. **Terraform Plan** : Génère le plan de déploiement
-3. **Terraform Apply** : Déploie l'infrastructure
-4. **Attente de l'application** : Attend que l'application soit prête (jusqu'à 5 minutes)
-5. **Smoke Tests** : Vérifie que l'application répond correctement
+1. **Connexion Azure** : Se connecte à Azure avec le Service Principal via Azure CLI
+2. **Génération de clés SSH** : Génère automatiquement des clés SSH pour la VM
+3. **Formatage Terraform** : Formate automatiquement les fichiers Terraform
+4. **Terraform Init** : Initialise Terraform
+5. **Terraform Validate** : Valide la syntaxe Terraform
+6. **Terraform Plan** : Génère le plan de déploiement
+7. **Terraform Apply** : Déploie l'infrastructure (crée le Resource Group, la VM, le réseau, etc.)
+8. **Attente de l'application** : Attend que l'application soit prête (jusqu'à 5 minutes)
+9. **Smoke Tests** : Vérifie que l'application répond correctement
    - Test de la page d'accueil (HTTP 200 ou 302)
    - Test de l'API (si disponible)
    - Vérification du temps de réponse
-6. **Nettoyage automatique** : Supprime toutes les ressources avec `terraform destroy`
+10. **Nettoyage** : Nettoie les fichiers Terraform locaux
 
-**Durée totale** : Environ 10-15 minutes (déploiement + tests + nettoyage)
+**Durée totale** : Environ 10-15 minutes (déploiement + tests)
 
 ### Vérifier l'exécution du workflow
 
@@ -280,12 +281,15 @@ Le workflow `.github/workflows/deploy-iaas.yml` s'exécute automatiquement à ch
 
 ### Notes sur la CI/CD
 
-- **Coûts** : Le workflow crée et supprime automatiquement les ressources, donc les coûts sont minimaux (seulement pendant les tests)
+- **Coûts** : Les ressources Azure restent actives après le déploiement. Pour les supprimer, utilisez `terraform destroy` manuellement.
 - **Déploiement manuel** : Vous pouvez toujours déployer manuellement avec `terraform apply` si nécessaire
-- **Échec du workflow** : Si le workflow échoue, les ressources sont quand même nettoyées automatiquement grâce à `if: always()`
+- **Région** : Le Resource Group et toutes les ressources sont créées dans la région `francecentral`
+- **Connexion Azure** : Le workflow utilise Azure CLI directement pour se connecter à Azure (plus fiable que l'action GitHub)
 
 ## Notes importantes
 
 - **Coûts** : La VM Standard_B1s génère des coûts tant qu'elle existe. N'oubliez pas de faire `terraform destroy` quand vous n'en avez plus besoin.
+- **Région** : Toutes les ressources sont créées dans la région `francecentral` (région autorisée pour les abonnements étudiants Azure).
 - **Sécurité** : Les ports SSH (22) et HTTP (80) sont ouverts à tous (`*`). Pour la production, limitez-les à votre IP.
-- **Clés SSH** : Si vous n'avez pas de clés SSH dans `~/.ssh/id_rsa`, vous pouvez les spécifier via des variables Terraform.
+- **Clés SSH** : Si vous n'avez pas de clés SSH dans `~/.ssh/id_rsa`, vous pouvez les spécifier via des variables Terraform. Dans GitHub Actions, les clés SSH sont générées automatiquement.
+- **Resource Group** : Le Resource Group est créé automatiquement par Terraform. Si vous le supprimez manuellement, Terraform le recréera au prochain déploiement.
