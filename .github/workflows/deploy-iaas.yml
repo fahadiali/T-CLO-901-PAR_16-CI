@@ -31,20 +31,35 @@ jobs:
           curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 
       - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Set Azure Subscription
-        id: set_subscription
+        id: azure_login
         run: |
-          # Extraire l'ID d'abonnement depuis les credentials
-          SUBSCRIPTION_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | grep -o '"subscriptionId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          # Extraire les credentials depuis le secret JSON
+          CREDENTIALS='${{ secrets.AZURE_CREDENTIALS }}'
+          CLIENT_ID=$(echo "$CREDENTIALS" | grep -o '"clientId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          CLIENT_SECRET=$(echo "$CREDENTIALS" | grep -o '"clientSecret"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          TENANT_ID=$(echo "$CREDENTIALS" | grep -o '"tenantId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          SUBSCRIPTION_ID=$(echo "$CREDENTIALS" | grep -o '"subscriptionId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          
+          echo "::add-mask::$CLIENT_SECRET"
+          
+          # Connexion Azure avec Service Principal
+          az login --service-principal \
+            --username "$CLIENT_ID" \
+            --password "$CLIENT_SECRET" \
+            --tenant "$TENANT_ID"
+          
+          # Définir l'abonnement actif
+          az account set --subscription "$SUBSCRIPTION_ID"
+          
+          # Vérifier la connexion
+          az account show
+          
+          # Sauvegarder l'ID d'abonnement pour Terraform
           echo "subscription_id=$SUBSCRIPTION_ID" >> $GITHUB_OUTPUT
           echo "ARM_SUBSCRIPTION_ID=$SUBSCRIPTION_ID" >> $GITHUB_ENV
-          echo "Subscription ID: $SUBSCRIPTION_ID"
-          # Définir l'abonnement actif dans Azure CLI
-          az account set --subscription "$SUBSCRIPTION_ID"
+          echo "ARM_CLIENT_ID=$CLIENT_ID" >> $GITHUB_ENV
+          echo "ARM_CLIENT_SECRET=$CLIENT_SECRET" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=$TENANT_ID" >> $GITHUB_ENV
 
       - name: Generate SSH Key Pair
         id: ssh_key
@@ -68,19 +83,19 @@ jobs:
       - name: Terraform Init
         working-directory: terraform/iaas
         env:
-          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
         run: terraform init
 
       - name: Terraform Validate
         working-directory: terraform/iaas
         env:
-          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
         run: terraform validate
 
       - name: Terraform Plan
         working-directory: terraform/iaas
         env:
-          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
           TF_VAR_ssh_public_key: ${{ steps.ssh_key.outputs.public_key }}
           TF_VAR_ssh_private_key: ${{ steps.ssh_key.outputs.private_key }}
         run: terraform plan -out=tfplan
@@ -88,7 +103,7 @@ jobs:
       - name: Terraform Apply
         working-directory: terraform/iaas
         env:
-          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
           TF_VAR_ssh_public_key: ${{ steps.ssh_key.outputs.public_key }}
           TF_VAR_ssh_private_key: ${{ steps.ssh_key.outputs.private_key }}
         run: terraform apply -auto-approve tfplan
@@ -147,14 +162,14 @@ jobs:
         if: always()
         working-directory: terraform/iaas
         env:
-          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
         run: terraform init
 
       - name: Terraform Destroy
         if: always()
         working-directory: terraform/iaas
         env:
-          ARM_SUBSCRIPTION_ID: ${{ steps.set_subscription.outputs.subscription_id }}
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
           TF_VAR_ssh_public_key: ${{ steps.ssh_key.outputs.public_key }}
           TF_VAR_ssh_private_key: ${{ steps.ssh_key.outputs.private_key }}
         run: terraform destroy -auto-approve
