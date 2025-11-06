@@ -11,7 +11,6 @@ on:
 
 env:
   TF_VERSION: '1.6.0'
-  AZURE_CLI_VERSION: '2.57.0'
 
 jobs:
   deploy:
@@ -27,10 +26,9 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Setup Azure CLI
-        uses: azure/setup-az-cli@v3
-        with:
-          azure-cli-version: ${{ env.AZURE_CLI_VERSION }}
+      - name: Install Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 
       - name: Azure Login
         uses: azure/login@v2
