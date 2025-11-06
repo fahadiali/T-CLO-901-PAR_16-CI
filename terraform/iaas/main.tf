@@ -107,9 +107,9 @@ resource "azurerm_network_interface_security_group_association" "vm" {
 
 # Lecture automatique des clés SSH depuis ~/.ssh/id_rsa.pub et ~/.ssh/id_rsa
 locals {
-  ssh_public_key_content = var.ssh_public_key != "" ? var.ssh_public_key : file("${pathexpand("~")}/.ssh/id_rsa.pub")
+  ssh_public_key_content  = var.ssh_public_key != "" ? var.ssh_public_key : file("${pathexpand("~")}/.ssh/id_rsa.pub")
   ssh_private_key_content = var.ssh_private_key != "" ? var.ssh_private_key : file("${pathexpand("~")}/.ssh/id_rsa")
-  
+
   cloud_init = <<-EOF
     #cloud-config
     package_update: true

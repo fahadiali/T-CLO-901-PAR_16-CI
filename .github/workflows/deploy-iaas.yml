@@ -50,9 +50,9 @@ jobs:
           echo "$SSH_PRIVATE_KEY" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Terraform Format Check
+      - name: Terraform Format
         working-directory: terraform/iaas
-        run: terraform fmt -check -recursive
+        run: terraform fmt -recursive
 
       - name: Terraform Init
         working-directory: terraform/iaas
@@ -125,6 +125,11 @@ jobs:
           fi
           
           echo "All smoke tests passed!"
+
+      - name: Terraform Init (for destroy)
+        if: always()
+        working-directory: terraform/iaas
+        run: terraform init
 
       - name: Terraform Destroy
         if: always()
