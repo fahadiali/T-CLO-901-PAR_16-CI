@@ -1,6 +1,7 @@
 # Variables Terraform pour le déploiement IaaS
 # Configuration pour CI/CD avec GitHub Actions
 # Test avec nouveaux credentials Azure
+# Resource group dans francecentral
 variable "resource_group_name" {
   description = "Nom du Resource Group existant où déployer la VM"
   type        = string
