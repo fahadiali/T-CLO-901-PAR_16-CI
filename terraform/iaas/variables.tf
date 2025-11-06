@@ -1,3 +1,4 @@
+# Variables Terraform pour le déploiement IaaS
 variable "resource_group_name" {
   description = "Nom du Resource Group existant où déployer la VM"
   type        = string
