@@ -3,6 +3,7 @@
 # Test avec nouveaux credentials Azure
 # Resource group dans francecentral
 # Connexion Azure CLI directe
+# Permissions Service Principal ajoutées
 variable "resource_group_name" {
   description = "Nom du Resource Group existant où déployer la VM"
   type        = string
