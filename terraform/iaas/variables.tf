@@ -4,6 +4,7 @@
 # Resource group dans francecentral
 # Connexion Azure CLI directe
 # Permissions Service Principal ajoutées
+# Relance CI après nettoyage
 variable "resource_group_name" {
   description = "Nom du Resource Group existant où déployer la VM"
   type        = string
