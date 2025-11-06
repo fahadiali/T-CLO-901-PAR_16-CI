@@ -35,7 +35,6 @@ resource "random_string" "suffix" {
   special = false
 }
 
-
 # Réseau
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-${random_string.suffix.result}"
