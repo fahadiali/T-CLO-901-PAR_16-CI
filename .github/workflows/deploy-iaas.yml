@@ -1,0 +1,145 @@
+name: Deploy IaaS Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/iaas/**'
+      - 'docker/**'
+      - 'sample-app-master/**'
+
+env:
+  TF_VERSION: '1.6.0'
+  AZURE_CLI_VERSION: '2.57.0'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Setup Azure CLI
+        uses: azure/setup-az-cli@v3
+        with:
+          azure-cli-version: ${{ env.AZURE_CLI_VERSION }}
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Generate SSH Key Pair
+        id: ssh_key
+        run: |
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "github-actions"
+          echo "::add-mask::$(cat ~/.ssh/id_rsa)"
+          echo "::add-mask::$(cat ~/.ssh/id_rsa.pub)"
+          SSH_PUBLIC_KEY=$(cat ~/.ssh/id_rsa.pub)
+          SSH_PRIVATE_KEY=$(cat ~/.ssh/id_rsa)
+          echo "public_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$SSH_PUBLIC_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "private_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$SSH_PRIVATE_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Terraform Format Check
+        working-directory: terraform/iaas
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init
+        working-directory: terraform/iaas
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: terraform/iaas
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: terraform/iaas
+        env:
+          TF_VAR_ssh_public_key: ${{ steps.ssh_key.outputs.public_key }}
+          TF_VAR_ssh_private_key: ${{ steps.ssh_key.outputs.private_key }}
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform/iaas
+        env:
+          TF_VAR_ssh_public_key: ${{ steps.ssh_key.outputs.public_key }}
+          TF_VAR_ssh_private_key: ${{ steps.ssh_key.outputs.private_key }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get Public IP
+        id: get_ip
+        working-directory: terraform/iaas
+        run: |
+          PUBLIC_IP=$(terraform output -raw public_ip)
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "Public IP: $PUBLIC_IP"
+
+      - name: Wait for application to be ready
+        run: |
+          echo "Waiting for application to start..."
+          for i in {1..30}; do
+            if curl -f -s -o /dev/null -w "%{http_code}" http://${{ steps.get_ip.outputs.public_ip }} | grep -q "200\|302"; then
+              echo "Application is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: Application not ready yet, waiting 10 seconds..."
+            sleep 10
+          done
+          echo "Application did not become ready in time"
+          exit 1
+
+      - name: Run Smoke Tests
+        run: |
+          PUBLIC_IP="${{ steps.get_ip.outputs.public_ip }}"
+          echo "Running smoke tests against http://$PUBLIC_IP"
+          
+          # Test 1: Homepage returns 200 or 302
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://$PUBLIC_IP)
+          echo "Homepage HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "302" ]; then
+            echo "ERROR: Homepage returned $HTTP_CODE instead of 200 or 302"
+            exit 1
+          fi
+          
+          # Test 2: API endpoint (if exists)
+          API_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://$PUBLIC_IP/api || echo "000")
+          echo "API HTTP status: $API_CODE"
+          
+          # Test 3: Response time check
+          RESPONSE_TIME=$(curl -s -o /dev/null -w "%{time_total}" http://$PUBLIC_IP)
+          echo "Response time: ${RESPONSE_TIME}s"
+          # Convert to integer (multiply by 1000 to compare as milliseconds)
+          RESPONSE_MS=$(echo "$RESPONSE_TIME * 1000" | awk '{printf "%.0f", $1}')
+          if [ "$RESPONSE_MS" -gt 5000 ]; then
+            echo "WARNING: Response time is slow (${RESPONSE_TIME}s)"
+          fi
+          
+          echo "All smoke tests passed!"
+
+      - name: Terraform Destroy
+        if: always()
+        working-directory: terraform/iaas
+        env:
+          TF_VAR_ssh_public_key: ${{ steps.ssh_key.outputs.public_key }}
+          TF_VAR_ssh_private_key: ${{ steps.ssh_key.outputs.private_key }}
+        run: terraform destroy -auto-approve
+
+      - name: Cleanup Terraform files
+        if: always()
+        working-directory: terraform/iaas
+        run: |
+          rm -f tfplan
+          rm -rf .terraform
+

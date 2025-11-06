@@ -216,6 +216,74 @@ terraform destroy
 
 Tapez `yes` pour confirmer. Cela supprime la VM, le réseau, et toutes les ressources associées.
 
+## CI/CD avec GitHub Actions
+
+Le projet inclut un workflow GitHub Actions qui déploie automatiquement l'infrastructure à chaque push sur la branche `main`.
+
+### Configuration des secrets Azure
+
+Pour que GitHub Actions puisse déployer sur Azure, vous devez créer un Service Principal Azure et l'ajouter comme secret dans GitHub.
+
+#### Étape 1 : Créer un Service Principal Azure
+
+```bash
+az ad sp create-for-rbac --name "github-actions-iaas" \
+  --role contributor \
+  --scopes /subscriptions/VOTRE_SUBSCRIPTION_ID/resourceGroups/rg-par_16 \
+  --sdk-auth
+```
+
+Cette commande affiche un JSON avec les credentials. **Copiez ce JSON**, vous en aurez besoin pour l'étape suivante.
+
+**Important** : Remplacez `VOTRE_SUBSCRIPTION_ID` par votre ID d'abonnement Azure. Vous pouvez le trouver avec :
+
+```bash
+az account show --query id -o tsv
+```
+
+#### Étape 2 : Ajouter le secret dans GitHub
+
+1. Allez sur votre dépôt GitHub : `https://github.com/VOTRE_ORGANISATION/T-CLO-901-PAR_16`
+2. Cliquez sur **Settings** → **Secrets and variables** → **Actions**
+3. Cliquez sur **New repository secret**
+4. Nom : `AZURE_CREDENTIALS`
+5. Valeur : Collez le JSON complet obtenu à l'étape 1
+6. Cliquez sur **Add secret**
+
+### Fonctionnement du workflow
+
+Le workflow `.github/workflows/deploy-iaas.yml` s'exécute automatiquement à chaque push sur `main` qui modifie :
+- Les fichiers Terraform (`terraform/iaas/**`)
+- La configuration Docker (`docker/**`)
+- Le code de l'application (`sample-app-master/**`)
+
+**Étapes du workflow** :
+
+1. **Validation Terraform** : Vérifie le formatage et la syntaxe
+2. **Terraform Plan** : Génère le plan de déploiement
+3. **Terraform Apply** : Déploie l'infrastructure
+4. **Attente de l'application** : Attend que l'application soit prête (jusqu'à 5 minutes)
+5. **Smoke Tests** : Vérifie que l'application répond correctement
+   - Test de la page d'accueil (HTTP 200 ou 302)
+   - Test de l'API (si disponible)
+   - Vérification du temps de réponse
+6. **Nettoyage automatique** : Supprime toutes les ressources avec `terraform destroy`
+
+**Durée totale** : Environ 10-15 minutes (déploiement + tests + nettoyage)
+
+### Vérifier l'exécution du workflow
+
+1. Allez sur votre dépôt GitHub
+2. Cliquez sur l'onglet **Actions**
+3. Vous verrez l'historique des exécutions du workflow
+4. Cliquez sur une exécution pour voir les détails de chaque étape
+
+### Notes sur la CI/CD
+
+- **Coûts** : Le workflow crée et supprime automatiquement les ressources, donc les coûts sont minimaux (seulement pendant les tests)
+- **Déploiement manuel** : Vous pouvez toujours déployer manuellement avec `terraform apply` si nécessaire
+- **Échec du workflow** : Si le workflow échoue, les ressources sont quand même nettoyées automatiquement grâce à `if: always()`
+
 ## Notes importantes
 
 - **Coûts** : La VM Standard_B1s génère des coûts tant qu'elle existe. N'oubliez pas de faire `terraform destroy` quand vous n'en avez plus besoin.
