@@ -21,9 +21,10 @@ provider "azurerm" {
   features {}
 }
 
-# Resource Group existant
-data "azurerm_resource_group" "target" {
-  name = var.resource_group_name
+# Resource Group - créé s'il n'existe pas
+resource "azurerm_resource_group" "target" {
+  name     = var.resource_group_name
+  location = "francecentral"
 }
 
 resource "random_string" "suffix" {
@@ -37,30 +38,30 @@ resource "random_string" "suffix" {
 # Réseau
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-${random_string.suffix.result}"
-  location            = data.azurerm_resource_group.target.location
-  resource_group_name = data.azurerm_resource_group.target.name
+  location            = azurerm_resource_group.target.location
+  resource_group_name = azurerm_resource_group.target.name
   address_space       = ["10.10.0.0/16"]
 }
 
 resource "azurerm_subnet" "subnet" {
   name                 = "subnet-app"
-  resource_group_name  = data.azurerm_resource_group.target.name
+  resource_group_name  = azurerm_resource_group.target.name
   virtual_network_name = azurerm_virtual_network.vnet.name
   address_prefixes     = ["10.10.1.0/24"]
 }
 
 resource "azurerm_public_ip" "vm" {
   name                = "pip-vm-${random_string.suffix.result}"
-  location            = data.azurerm_resource_group.target.location
-  resource_group_name = data.azurerm_resource_group.target.name
+  location            = azurerm_resource_group.target.location
+  resource_group_name = azurerm_resource_group.target.name
   allocation_method   = "Static"
   sku                 = "Standard"
 }
 
 resource "azurerm_network_security_group" "vm" {
   name                = "nsg-vm-${random_string.suffix.result}"
-  location            = data.azurerm_resource_group.target.location
-  resource_group_name = data.azurerm_resource_group.target.name
+  location            = azurerm_resource_group.target.location
+  resource_group_name = azurerm_resource_group.target.name
 
   security_rule {
     name                       = "SSH"
@@ -89,8 +90,8 @@ resource "azurerm_network_security_group" "vm" {
 
 resource "azurerm_network_interface" "vm" {
   name                = "nic-vm-${random_string.suffix.result}"
-  location            = data.azurerm_resource_group.target.location
-  resource_group_name = data.azurerm_resource_group.target.name
+  location            = azurerm_resource_group.target.location
+  resource_group_name = azurerm_resource_group.target.name
 
   ip_configuration {
     name                          = "ipcfg"
@@ -142,8 +143,8 @@ locals {
 
 resource "azurerm_linux_virtual_machine" "vm" {
   name                = "vm-app-${random_string.suffix.result}"
-  location            = data.azurerm_resource_group.target.location
-  resource_group_name = data.azurerm_resource_group.target.name
+  location            = azurerm_resource_group.target.location
+  resource_group_name = azurerm_resource_group.target.name
   size                = var.vm_size
 
   admin_username = var.admin_username
