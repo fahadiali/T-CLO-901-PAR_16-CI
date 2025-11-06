@@ -211,7 +211,19 @@ resource "null_resource" "deploy_app" {
 
   provisioner "remote-exec" {
     inline = [
-      "sleep 60",
+      "echo 'Attente de l installation de Docker...'",
+      "for i in {1..30}; do",
+      "  if command -v docker >/dev/null 2>&1 && docker --version >/dev/null 2>&1; then",
+      "    echo 'Docker est installé et prêt'",
+      "    break",
+      "  fi",
+      "  echo 'Tentative $i/30: Docker pas encore prêt, attente 10 secondes...'",
+      "  sleep 10",
+      "done",
+      "if ! command -v docker >/dev/null 2>&1; then",
+      "  echo 'ERREUR: Docker n est pas installé après 5 minutes'",
+      "  exit 1",
+      "fi",
       "cd /opt/app && sudo docker compose build",
       "cd /opt/app && sudo docker compose up -d"
     ]
