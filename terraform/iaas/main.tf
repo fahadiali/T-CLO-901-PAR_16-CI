@@ -47,6 +47,8 @@ resource "azurerm_subnet" "subnet" {
   resource_group_name  = data.azurerm_resource_group.target.name
   virtual_network_name = azurerm_virtual_network.vnet.name
   address_prefixes     = ["10.10.1.0/24"]
+
+  depends_on = [azurerm_virtual_network.vnet]
 }
 
 resource "azurerm_public_ip" "vm" {
