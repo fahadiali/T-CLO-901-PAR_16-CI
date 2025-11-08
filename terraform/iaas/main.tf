@@ -19,6 +19,8 @@ terraform {
 
 provider "azurerm" {
   features {}
+
+  subscription_id = var.subscription_id
 }
 
 # Resource Group - créé s'il n'existe pas
@@ -221,4 +223,3 @@ resource "null_resource" "deploy_app" {
     ]
   }
 }
-

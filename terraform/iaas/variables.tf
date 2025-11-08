@@ -36,3 +36,8 @@ variable "vm_size" {
   default     = "Standard_B1s"
 }
 
+variable "subscription_id" {
+  type        = string
+  description = "Azure subscription ID."
+}
+
