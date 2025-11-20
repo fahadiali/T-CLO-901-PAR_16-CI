@@ -1,0 +1,87 @@
+---
+- name: Deploy sample-app with Docker
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    remote_project_path: /opt/sample-app
+    local_project_path: "{{ playbook_dir | dirname }}/sample-app-master"
+
+  pre_tasks:
+    - name: Ensure local project path exists
+      delegate_to: localhost
+      run_once: true
+      become: false
+      stat:
+        path: "{{ local_project_path }}"
+      register: project_path
+
+    - name: Abort when the project directory is missing
+      delegate_to: localhost
+      run_once: true
+      become: false
+      fail:
+        msg: "Local project not found. Override local_project_path if needed."
+      when: not project_path.stat.exists
+
+  tasks:
+    - name: Refresh apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_pkg_mgr == 'apt'
+
+    - name: Install Docker using the official convenience script
+      shell: curl -fsSL https://get.docker.com | sh
+      args:
+        creates: /usr/bin/docker
+
+    - name: Install docker compose plugin when available
+      apt:
+        name: docker-compose-plugin
+        state: present
+      when: ansible_pkg_mgr == 'apt'
+
+    - name: Ensure project directory exists on the VM
+      file:
+        path: "{{ remote_project_path }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy the sample app to the VM
+      copy:
+        src: "{{ local_project_path }}/"
+        dest: "{{ remote_project_path }}/"
+        owner: root
+        group: root
+        mode: preserve
+
+    - name: Stop previous stack and remove orphans
+      shell: docker compose down --remove-orphans
+      args:
+        chdir: "{{ remote_project_path }}"
+      ignore_errors: true
+
+    - name: Start database service only
+      shell: docker compose up -d db
+      args:
+        chdir: "{{ remote_project_path }}"
+
+    - name: Wait for database to accept connections
+      shell: docker compose exec -T db mysqladmin ping -h localhost --silent
+      args:
+        chdir: "{{ remote_project_path }}"
+      register: mysql_ping
+      retries: 20
+      delay: 3
+      until: mysql_ping.rc == 0
+
+    - name: Run database migrations
+      shell: docker compose run --rm app php artisan migrate --force
+      args:
+        chdir: "{{ remote_project_path }}"
+
+    - name: Start the docker compose stack
+      shell: docker compose up -d
+      args:
+        chdir: "{{ remote_project_path }}"

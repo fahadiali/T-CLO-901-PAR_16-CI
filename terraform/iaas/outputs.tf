@@ -7,6 +7,6 @@ output "public_ip" {
 
 output "ssh_command" {
   description = "Commande SSH pratique pour se connecter à la VM"
-  value       = "ssh -i <PATH_TO_PRIVATE_KEY> ${var.admin_username}@${azurerm_public_ip.vm.ip_address}"
+  value       = "ssh -i ~/.ssh/id_rsa ${var.admin_username}@${azurerm_public_ip.vm.ip_address}"
 }
 
