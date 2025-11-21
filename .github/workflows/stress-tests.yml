@@ -1,0 +1,270 @@
+name: Stress Tests (k6 Performance Testing)
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Test scenario (smoke, load, stress, spike, endurance)'
+        required: false
+        default: 'load'
+        type: choice
+        options:
+          - smoke
+          - load
+          - stress
+          - spike
+          - endurance
+      test_iaas:
+        description: 'Test IaaS environment'
+        required: false
+        default: true
+        type: boolean
+      test_paas:
+        description: 'Test PaaS environment'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  TF_VERSION: '1.6.0'
+  K6_VERSION: 'v0.47.0'
+
+jobs:
+  stress-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Install Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      - name: Azure Login
+        id: azure_login
+        run: |
+          # Extraire les credentials depuis le secret JSON
+          CREDENTIALS='${{ secrets.AZURE_CREDENTIALS }}'
+          CLIENT_ID=$(echo "$CREDENTIALS" | grep -o '"clientId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          CLIENT_SECRET=$(echo "$CREDENTIALS" | grep -o '"clientSecret"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          TENANT_ID=$(echo "$CREDENTIALS" | grep -o '"tenantId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          SUBSCRIPTION_ID=$(echo "$CREDENTIALS" | grep -o '"subscriptionId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          
+          echo "::add-mask::$CLIENT_SECRET"
+          
+          # Connexion Azure avec Service Principal
+          az login --service-principal \
+            --username "$CLIENT_ID" \
+            --password "$CLIENT_SECRET" \
+            --tenant "$TENANT_ID"
+          
+          # Définir l'abonnement actif
+          az account set --subscription "$SUBSCRIPTION_ID"
+          
+          echo "subscription_id=$SUBSCRIPTION_ID" >> $GITHUB_OUTPUT
+          echo "ARM_SUBSCRIPTION_ID=$SUBSCRIPTION_ID" >> $GITHUB_ENV
+
+      - name: Get IaaS URL
+        id: iaas_url
+        if: ${{ inputs.test_iaas != false && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+        working-directory: terraform/iaas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        run: |
+          terraform init -input=false 2>&1 | grep -v "already been initialized" || true
+          
+          PUBLIC_IP=$(terraform output -raw public_ip 2>/dev/null || echo "")
+          
+          if [ -z "$PUBLIC_IP" ]; then
+            echo "WARNING: IaaS infrastructure not found. Skipping IaaS tests."
+            echo "iaas_url=" >> $GITHUB_OUTPUT
+            echo "iaas_available=false" >> $GITHUB_OUTPUT
+          else
+            echo "iaas_url=http://$PUBLIC_IP" >> $GITHUB_OUTPUT
+            echo "iaas_available=true" >> $GITHUB_OUTPUT
+            echo "IaaS URL: http://$PUBLIC_IP"
+          fi
+
+      - name: Get PaaS URL
+        id: paas_url
+        if: ${{ inputs.test_paas != false && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+        working-directory: terraform/paas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        run: |
+          terraform init -input=false 2>&1 | grep -v "already been initialized" || true
+          
+          WEBAPP_URL=$(terraform output -raw webapp_url 2>/dev/null || echo "")
+          
+          if [ -z "$WEBAPP_URL" ]; then
+            echo "WARNING: PaaS infrastructure not found. Skipping PaaS tests."
+            echo "paas_url=" >> $GITHUB_OUTPUT
+            echo "paas_available=false" >> $GITHUB_OUTPUT
+          else
+            echo "paas_url=https://$WEBAPP_URL" >> $GITHUB_OUTPUT
+            echo "paas_available=true" >> $GITHUB_OUTPUT
+            echo "PaaS URL: https://$WEBAPP_URL"
+          fi
+
+      - name: Install k6
+        run: |
+          sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+          k6 version
+
+      - name: Run k6 Tests on IaaS
+        id: k6_iaas
+        if: ${{ steps.iaas_url.outputs.iaas_available == 'true' }}
+        env:
+          APP_URL: ${{ steps.iaas_url.outputs.iaas_url }}
+          SCENARIO: ${{ inputs.scenario || 'load' }}
+        run: |
+          mkdir -p reports
+          
+          echo "Running k6 tests on IaaS: $APP_URL"
+          echo "Scenario: $SCENARIO"
+          
+          k6 run \
+            --out json=reports/iaas-k6-results.json \
+            --summary-export=reports/iaas-k6-summary.json \
+            scripts/k6-stress.js
+          
+          # Check exit code
+          if [ $? -eq 0 ]; then
+            echo "iaas_tests_passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "iaas_tests_passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run k6 Tests on PaaS
+        id: k6_paas
+        if: ${{ steps.paas_url.outputs.paas_available == 'true' }}
+        env:
+          APP_URL: ${{ steps.paas_url.outputs.paas_url }}
+          SCENARIO: ${{ inputs.scenario || 'load' }}
+        run: |
+          mkdir -p reports
+          
+          echo "Running k6 tests on PaaS: $APP_URL"
+          echo "Scenario: $SCENARIO"
+          
+          k6 run \
+            --out json=reports/paas-k6-results.json \
+            --summary-export=reports/paas-k6-summary.json \
+            scripts/k6-stress.js
+          
+          # Check exit code
+          if [ $? -eq 0 ]; then
+            echo "paas_tests_passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "paas_tests_passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate Comparison Report
+        if: always()
+        run: |
+          echo "# Performance Test Results" > reports/comparison.md
+          echo "" >> reports/comparison.md
+          echo "**Test Scenario:** ${{ inputs.scenario || 'load' }}" >> reports/comparison.md
+          echo "**Test Date:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> reports/comparison.md
+          echo "" >> reports/comparison.md
+          
+          if [ -f reports/iaas-k6-summary.json ]; then
+            echo "## IaaS Results" >> reports/comparison.md
+            echo "" >> reports/comparison.md
+            echo "\`\`\`json" >> reports/comparison.md
+            cat reports/iaas-k6-summary.json >> reports/comparison.md
+            echo "\`\`\`" >> reports/comparison.md
+            echo "" >> reports/comparison.md
+          fi
+          
+          if [ -f reports/paas-k6-summary.json ]; then
+            echo "## PaaS Results" >> reports/comparison.md
+            echo "" >> reports/comparison.md
+            echo "\`\`\`json" >> reports/comparison.md
+            cat reports/paas-k6-summary.json >> reports/comparison.md
+            echo "\`\`\`" >> reports/comparison.md
+            echo "" >> reports/comparison.md
+          fi
+          
+          # Extract key metrics for comparison
+          if [ -f reports/iaas-k6-summary.json ] && [ -f reports/paas-k6-summary.json ]; then
+            echo "## Comparison" >> reports/comparison.md
+            echo "" >> reports/comparison.md
+            echo "### Response Time (p95)" >> reports/comparison.md
+            echo "" >> reports/comparison.md
+            
+            IaaS_P95=$(jq -r '.metrics.http_req_duration.values.p95' reports/iaas-k6-summary.json 2>/dev/null || echo "N/A")
+            PaaS_P95=$(jq -r '.metrics.http_req_duration.values.p95' reports/paas-k6-summary.json 2>/dev/null || echo "N/A")
+            
+            echo "- **IaaS:** ${IaaS_P95}ms" >> reports/comparison.md
+            echo "- **PaaS:** ${PaaS_P95}ms" >> reports/comparison.md
+            echo "" >> reports/comparison.md
+            
+            echo "### Throughput (req/s)" >> reports/comparison.md
+            echo "" >> reports/comparison.md
+            
+            IaaS_RATE=$(jq -r '.metrics.http_reqs.values.rate' reports/iaas-k6-summary.json 2>/dev/null || echo "N/A")
+            PaaS_RATE=$(jq -r '.metrics.http_reqs.values.rate' reports/paas-k6-summary.json 2>/dev/null || echo "N/A")
+            
+            echo "- **IaaS:** ${IaaS_RATE} req/s" >> reports/comparison.md
+            echo "- **PaaS:** ${PaaS_RATE} req/s" >> reports/comparison.md
+            echo "" >> reports/comparison.md
+            
+            echo "### Error Rate" >> reports/comparison.md
+            echo "" >> reports/comparison.md
+            
+            IaaS_ERRORS=$(jq -r '.metrics.http_req_failed.values.rate' reports/iaas-k6-summary.json 2>/dev/null || echo "N/A")
+            PaaS_ERRORS=$(jq -r '.metrics.http_req_failed.values.rate' reports/paas-k6-summary.json 2>/dev/null || echo "N/A")
+            
+            echo "- **IaaS:** ${IaaS_ERRORS}" >> reports/comparison.md
+            echo "- **PaaS:** ${PaaS_ERRORS}" >> reports/comparison.md
+          fi
+          
+          cat reports/comparison.md
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: k6-performance-reports
+          path: |
+            reports/*.json
+            reports/*.html
+            reports/*.md
+          retention-days: 30
+
+      - name: Check Test Results
+        if: always()
+        run: |
+          FAILED=false
+          
+          if [ "${{ steps.iaas_url.outputs.iaas_available }}" = "true" ] && [ "${{ steps.k6_iaas.outputs.iaas_tests_passed }}" != "true" ]; then
+            echo "ERROR: IaaS tests failed"
+            FAILED=true
+          fi
+          
+          if [ "${{ steps.paas_url.outputs.paas_available }}" = "true" ] && [ "${{ steps.k6_paas.outputs.paas_tests_passed }}" != "true" ]; then
+            echo "ERROR: PaaS tests failed"
+            FAILED=true
+          fi
+          
+          if [ "$FAILED" = "true" ]; then
+            echo "Some tests failed. Check the reports for details."
+            exit 1
+          fi
+          
+          echo "All tests passed!"
+

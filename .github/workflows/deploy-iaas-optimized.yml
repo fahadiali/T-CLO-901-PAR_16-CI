@@ -1,0 +1,286 @@
+name: Deploy IaaS Optimized (With Registry)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'sample-app-master/**'
+      - 'docker/**'
+  workflow_dispatch:
+
+env:
+  TF_VERSION: '1.6.0'
+  IMAGE_NAME: 'sample-app'
+  IMAGE_TAG: 'latest'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Install Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      - name: Azure Login
+        id: azure_login
+        run: |
+          # Extraire les credentials depuis le secret JSON
+          CREDENTIALS='${{ secrets.AZURE_CREDENTIALS }}'
+          CLIENT_ID=$(echo "$CREDENTIALS" | grep -o '"clientId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          CLIENT_SECRET=$(echo "$CREDENTIALS" | grep -o '"clientSecret"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          TENANT_ID=$(echo "$CREDENTIALS" | grep -o '"tenantId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          SUBSCRIPTION_ID=$(echo "$CREDENTIALS" | grep -o '"subscriptionId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          
+          echo "::add-mask::$CLIENT_SECRET"
+          
+          # Connexion Azure avec Service Principal
+          az login --service-principal \
+            --username "$CLIENT_ID" \
+            --password "$CLIENT_SECRET" \
+            --tenant "$TENANT_ID"
+          
+          # Définir l'abonnement actif
+          az account set --subscription "$SUBSCRIPTION_ID"
+          
+          # Sauvegarder l'ID d'abonnement pour Terraform
+          echo "subscription_id=$SUBSCRIPTION_ID" >> $GITHUB_OUTPUT
+          echo "ARM_SUBSCRIPTION_ID=$SUBSCRIPTION_ID" >> $GITHUB_ENV
+
+      - name: Get ACR Info from PaaS Terraform
+        id: acr_info
+        working-directory: terraform/paas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        run: |
+          # Initialize Terraform if needed
+          terraform init -input=false 2>&1 | grep -v "already been initialized" || true
+          
+          # Get ACR info from PaaS Terraform state (reuse ACR from PaaS deployment)
+          ACR_SERVER=$(terraform output -raw acr_login_server 2>/dev/null || echo "")
+          ACR_NAME=$(terraform output -raw acr_name 2>/dev/null || echo "")
+          
+          if [ -z "$ACR_SERVER" ] || [ -z "$ACR_NAME" ]; then
+            echo "WARNING: ACR not found in PaaS Terraform state"
+            echo "Will try to use Docker Hub or create ACR..."
+            echo "acr_server=" >> $GITHUB_OUTPUT
+            echo "acr_name=" >> $GITHUB_OUTPUT
+            echo "acr_exists=false" >> $GITHUB_OUTPUT
+          else
+            echo "ACR found: $ACR_NAME at $ACR_SERVER"
+            echo "acr_server=$ACR_SERVER" >> $GITHUB_OUTPUT
+            echo "acr_name=$ACR_NAME" >> $GITHUB_OUTPUT
+            echo "acr_exists=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get Public IP from IaaS Terraform
+        id: get_ip
+        working-directory: terraform/iaas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        run: |
+          # Initialize Terraform if needed
+          terraform init -input=false 2>&1 | grep -v "already been initialized" || true
+          
+          # Get the public IP
+          PUBLIC_IP=$(terraform output -raw public_ip 2>/dev/null || echo "")
+          
+          if [ -z "$PUBLIC_IP" ]; then
+            echo "ERROR: Could not retrieve public IP from Terraform state"
+            echo "Make sure the IaaS infrastructure has been deployed first with deploy-iaas.yml"
+            exit 1
+          fi
+          
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "Public IP: $PUBLIC_IP"
+
+      - name: Login to Container Registry
+        id: registry_login
+        run: |
+          if [ "${{ steps.acr_info.outputs.acr_exists }}" = "true" ]; then
+            # Login to ACR
+            ACR_SERVER="${{ steps.acr_info.outputs.acr_server }}"
+            ACR_NAME="${{ steps.acr_info.outputs.acr_name }}"
+            
+            # Get ACR admin credentials
+            ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query username -o tsv)
+            ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query passwords[0].value -o tsv)
+            
+            echo "::add-mask::$ACR_PASSWORD"
+            
+            # Login to ACR
+            echo "$ACR_PASSWORD" | docker login "$ACR_SERVER" --username "$ACR_USERNAME" --password-stdin
+            
+            echo "registry_url=$ACR_SERVER" >> $GITHUB_OUTPUT
+            echo "registry_type=acr" >> $GITHUB_OUTPUT
+          elif [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            # Fallback to Docker Hub
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login --username "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+            
+            echo "registry_url=docker.io/${{ secrets.DOCKERHUB_USERNAME }}" >> $GITHUB_OUTPUT
+            echo "registry_type=dockerhub" >> $GITHUB_OUTPUT
+          else
+            echo "ERROR: No container registry available (ACR or Docker Hub)"
+            exit 1
+          fi
+
+      - name: Build Docker Image
+        working-directory: sample-app-master
+        run: |
+          REGISTRY_URL="${{ steps.registry_login.outputs.registry_url }}"
+          IMAGE_NAME="${{ env.IMAGE_NAME }}"
+          IMAGE_TAG="${{ env.IMAGE_TAG }}"
+          
+          if [ "${{ steps.registry_login.outputs.registry_type }}" = "dockerhub" ]; then
+            FULL_IMAGE_NAME="${REGISTRY_URL}/${IMAGE_NAME}:${IMAGE_TAG}"
+          else
+            FULL_IMAGE_NAME="${REGISTRY_URL}/${IMAGE_NAME}:${IMAGE_TAG}"
+          fi
+          
+          echo "Building Docker image: $FULL_IMAGE_NAME"
+          docker build -t "$FULL_IMAGE_NAME" .
+          
+          echo "full_image_name=$FULL_IMAGE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Push Docker Image to Registry
+        run: |
+          FULL_IMAGE_NAME="${{ steps.registry_login.outputs.registry_url }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          
+          echo "Pushing image to registry: $FULL_IMAGE_NAME"
+          docker push "$FULL_IMAGE_NAME"
+          
+          echo "Image pushed successfully!"
+
+      - name: Generate SSH Key Pair
+        id: ssh_key
+        run: |
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "github-actions-optimized"
+          echo "::add-mask::$(cat ~/.ssh/id_rsa)"
+          SSH_PRIVATE_KEY=$(cat ~/.ssh/id_rsa)
+          echo "private_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$SSH_PRIVATE_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Setup SSH and Update Docker Compose
+        run: |
+          PUBLIC_IP="${{ steps.get_ip.outputs.public_ip }}"
+          FULL_IMAGE_NAME="${{ steps.registry_login.outputs.registry_url }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          
+          # Use SSH key from secret if available, otherwise use generated key
+          if [ -n "${{ secrets.IaaS_SSH_PRIVATE_KEY }}" ]; then
+            SSH_KEY_CONTENT="${{ secrets.IaaS_SSH_PRIVATE_KEY }}"
+          else
+            SSH_KEY_CONTENT="${{ steps.ssh_key.outputs.private_key }}"
+            echo "WARNING: Using generated SSH key. This may not work unless the VM's authorized_keys has been updated."
+          fi
+          
+          # Create SSH key file
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY_CONTENT" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          
+          # Default username
+          VM_USER="${VM_USER:-azureuser}"
+          
+          echo "Connecting to VM: $VM_USER@$PUBLIC_IP"
+          echo "Using image: $FULL_IMAGE_NAME"
+          
+          # Update docker-compose.yml on VM with new image and deploy
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=10 \
+              "$VM_USER@$PUBLIC_IP" << ENDSSH
+            set -e
+            
+            # Find docker-compose.yml location
+            COMPOSE_FILE="/opt/docker-compose.yml"
+            if [ ! -f "$COMPOSE_FILE" ]; then
+              COMPOSE_FILE="\$(find /opt -name docker-compose.yml 2>/dev/null | head -1)"
+            fi
+            
+            if [ -z "$COMPOSE_FILE" ] || [ ! -f "$COMPOSE_FILE" ]; then
+              echo "ERROR: docker-compose.yml not found"
+              exit 1
+            fi
+            
+            echo "Found docker-compose.yml at: $COMPOSE_FILE"
+            cd "\$(dirname \$COMPOSE_FILE)"
+            
+            # Login to registry on VM if ACR
+            if [ "${{ steps.registry_login.outputs.registry_type }}" = "acr" ]; then
+              ACR_SERVER="${{ steps.registry_login.outputs.registry_url }}"
+              echo "Logging into ACR on VM..."
+              
+              # Get ACR credentials
+              ACR_USERNAME=\$(az acr credential show --name "${{ steps.acr_info.outputs.acr_name }}" --query username -o tsv)
+              ACR_PASSWORD=\$(az acr credential show --name "${{ steps.acr_info.outputs.acr_name }}" --query passwords[0].value -o tsv)
+              
+              echo "\$ACR_PASSWORD" | sudo docker login "\$ACR_SERVER" --username "\$ACR_USERNAME" --password-stdin || true
+            fi
+            
+            # Update docker-compose.yml to use the new image
+            echo "Updating docker-compose.yml with new image: $FULL_IMAGE_NAME"
+            
+            # Create backup
+            cp "\$COMPOSE_FILE" "\${COMPOSE_FILE}.backup"
+            
+            # Update image in docker-compose.yml using sed
+            # This updates the image under the app service
+            sudo sed -i "s|image:.*sample-app.*|image: $FULL_IMAGE_NAME|g" "\$COMPOSE_FILE" || true
+            sudo sed -i "s|build:.*sample-app-master.*|image: $FULL_IMAGE_NAME|g" "\$COMPOSE_FILE" || true
+            
+            # Pull new image and restart containers
+            echo "Pulling new image..."
+            sudo docker compose pull app || docker compose pull app || echo "Pull command not available, using up --build"
+            
+            echo "Restarting containers..."
+            sudo docker compose up -d
+            
+            # Wait a moment
+            sleep 5
+            
+            # Check container status
+            sudo docker compose ps
+            
+            echo "Deployment completed!"
+ENDSSH
+
+      - name: Wait for application to be ready
+        run: |
+          PUBLIC_IP="${{ steps.get_ip.outputs.public_ip }}"
+          echo "Waiting for application to be ready at http://$PUBLIC_IP..."
+          
+          for i in {1..15}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://$PUBLIC_IP" || echo "000")
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
+              echo "Application is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/15: Application not ready yet (HTTP $HTTP_CODE), waiting 5 seconds..."
+            sleep 5
+          done
+          
+          echo "WARNING: Application did not become ready in time"
+
+      - name: Run Smoke Test
+        run: |
+          PUBLIC_IP="${{ steps.get_ip.outputs.public_ip }}"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://$PUBLIC_IP")
+          echo "Homepage HTTP status: $HTTP_CODE"
+          
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "302" ]; then
+            echo "WARNING: Homepage returned $HTTP_CODE instead of 200 or 302"
+          else
+            echo "Smoke test passed!"
+          fi
+

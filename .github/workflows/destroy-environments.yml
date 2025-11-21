@@ -1,0 +1,235 @@
+name: Destroy Environments
+
+on:
+  schedule:
+    # Run every Saturday and Sunday at 3 AM UTC
+    - cron: '0 3 * * 0,6'
+  workflow_dispatch:
+    inputs:
+      destroy_iaas:
+        description: 'Destroy IaaS environment'
+        required: false
+        default: true
+        type: boolean
+      destroy_paas:
+        description: 'Destroy PaaS environment'
+        required: false
+        default: true
+        type: boolean
+      resource_group_only:
+        description: 'Only destroy resource group (more thorough cleanup)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  TF_VERSION: '1.6.0'
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Install Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Azure Login
+        id: azure_login
+        run: |
+          # Extraire les credentials depuis le secret JSON
+          CREDENTIALS='${{ secrets.AZURE_CREDENTIALS }}'
+          CLIENT_ID=$(echo "$CREDENTIALS" | grep -o '"clientId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          CLIENT_SECRET=$(echo "$CREDENTIALS" | grep -o '"clientSecret"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          TENANT_ID=$(echo "$CREDENTIALS" | grep -o '"tenantId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          SUBSCRIPTION_ID=$(echo "$CREDENTIALS" | grep -o '"subscriptionId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          
+          echo "::add-mask::$CLIENT_SECRET"
+          
+          # Connexion Azure avec Service Principal
+          az login --service-principal \
+            --username "$CLIENT_ID" \
+            --password "$CLIENT_SECRET" \
+            --tenant "$TENANT_ID"
+          
+          # Définir l'abonnement actif
+          az account set --subscription "$SUBSCRIPTION_ID"
+          
+          echo "subscription_id=$SUBSCRIPTION_ID" >> $GITHUB_OUTPUT
+          echo "ARM_SUBSCRIPTION_ID=$SUBSCRIPTION_ID" >> $GITHUB_ENV
+
+      - name: Get Cost Report Before Destruction
+        id: cost_before
+        run: |
+          mkdir -p reports
+          
+          echo "# Cost Report - Before Destruction" > reports/cost-report.md
+          echo "" >> reports/cost-report.md
+          echo "**Date:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> reports/cost-report.md
+          echo "**Subscription ID:** ${{ steps.azure_login.outputs.subscription_id }}" >> reports/cost-report.md
+          echo "" >> reports/cost-report.md
+          
+          # Get resource groups and their resources
+          RESOURCE_GROUPS=$(az group list --query "[?contains(name, 'par_16') || contains(name, 'rg-par_16')].name" -o tsv)
+          
+          if [ -z "$RESOURCE_GROUPS" ]; then
+            echo "No matching resource groups found." >> reports/cost-report.md
+            echo "cost_found=false" >> $GITHUB_OUTPUT
+          else
+            echo "cost_found=true" >> $GITHUB_OUTPUT
+            echo "## Resource Groups Found" >> reports/cost-report.md
+            echo "" >> reports/cost-report.md
+            
+            for RG in $RESOURCE_GROUPS; do
+              echo "### Resource Group: $RG" >> reports/cost-report.md
+              echo "" >> reports/cost-report.md
+              
+              # List resources in the group
+              RESOURCES=$(az resource list --resource-group "$RG" --query "[].{Name:name, Type:type, Location:location}" -o table)
+              echo "\`\`\`" >> reports/cost-report.md
+              echo "$RESOURCES" >> reports/cost-report.md
+              echo "\`\`\`" >> reports/cost-report.md
+              echo "" >> reports/cost-report.md
+              
+              # Get cost (if available)
+              echo "**Note:** Detailed cost information requires Azure Cost Management API access." >> reports/cost-report.md
+              echo "" >> reports/cost-report.md
+            done
+            
+            cat reports/cost-report.md
+          fi
+
+      - name: Destroy IaaS Infrastructure
+        if: ${{ inputs.destroy_iaas != false }}
+        working-directory: terraform/iaas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        continue-on-error: true
+        run: |
+          echo "Destroying IaaS infrastructure..."
+          
+          # Initialize Terraform if needed
+          terraform init -input=false 2>&1 | grep -v "already been initialized" || true
+          
+          # Check if state exists
+          if terraform state list 2>/dev/null | grep -q .; then
+            echo "Terraform state found. Proceeding with destroy..."
+            
+            # Get list of resources to be destroyed
+            terraform state list > /tmp/iaas-resources.txt
+            echo "Resources to be destroyed:" >> reports/cost-report.md
+            echo "\`\`\`" >> reports/cost-report.md
+            cat /tmp/iaas-resources.txt >> reports/cost-report.md
+            echo "\`\`\`" >> reports/cost-report.md
+            echo "" >> reports/cost-report.md
+            
+            # Destroy infrastructure
+            terraform destroy -auto-approve
+            
+            echo "IaaS infrastructure destroyed successfully"
+          else
+            echo "No Terraform state found. Infrastructure may already be destroyed."
+          fi
+
+      - name: Destroy PaaS Infrastructure
+        if: ${{ inputs.destroy_paas != false }}
+        working-directory: terraform/paas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        continue-on-error: true
+        run: |
+          echo "Destroying PaaS infrastructure..."
+          
+          # Initialize Terraform if needed
+          terraform init -input=false 2>&1 | grep -v "already been initialized" || true
+          
+          # Check if state exists
+          if terraform state list 2>/dev/null | grep -q .; then
+            echo "Terraform state found. Proceeding with destroy..."
+            
+            # Get list of resources to be destroyed
+            terraform state list > /tmp/paas-resources.txt
+            echo "PaaS resources to be destroyed:" >> reports/cost-report.md
+            echo "\`\`\`" >> reports/cost-report.md
+            cat /tmp/paas-resources.txt >> reports/cost-report.md
+            echo "\`\`\`" >> reports/cost-report.md
+            echo "" >> reports/cost-report.md
+            
+            # Destroy infrastructure
+            terraform destroy -auto-approve
+            
+            echo "PaaS infrastructure destroyed successfully"
+          else
+            echo "No Terraform state found. Infrastructure may already be destroyed."
+          fi
+
+      - name: Destroy Resource Groups (if requested)
+        if: ${{ inputs.resource_group_only == true }}
+        continue-on-error: true
+        run: |
+          echo "Destroying resource groups..."
+          
+          RESOURCE_GROUPS=$(az group list --query "[?contains(name, 'par_16') || contains(name, 'rg-par_16')].name" -o tsv)
+          
+          for RG in $RESOURCE_GROUPS; do
+            echo "Deleting resource group: $RG"
+            az group delete --name "$RG" --yes --no-wait || echo "Failed to delete $RG"
+          done
+          
+          echo "Resource group deletion initiated"
+
+      - name: Final Cleanup Check
+        run: |
+          echo "" >> reports/cost-report.md
+          echo "## Cleanup Status" >> reports/cost-report.md
+          echo "" >> reports/cost-report.md
+          echo "**Cleanup Date:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> reports/cost-report.md
+          echo "" >> reports/cost-report.md
+          
+          # Check remaining resource groups
+          REMAINING_RGS=$(az group list --query "[?contains(name, 'par_16') || contains(name, 'rg-par_16')].name" -o tsv)
+          
+          if [ -z "$REMAINING_RGS" ]; then
+            echo "✅ All resource groups have been cleaned up." >> reports/cost-report.md
+          else
+            echo "⚠️ Remaining resource groups:" >> reports/cost-report.md
+            echo "\`\`\`" >> reports/cost-report.md
+            echo "$REMAINING_RGS" >> reports/cost-report.md
+            echo "\`\`\`" >> reports/cost-report.md
+          fi
+          
+          cat reports/cost-report.md
+
+      - name: Upload Cost Report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: cost-report-$(date +%Y%m%d-%H%M%S)
+          path: reports/cost-report.md
+          retention-days: 90
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Destruction Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **IaaS Destroyed:** ${{ inputs.destroy_iaas != false }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **PaaS Destroyed:** ${{ inputs.destroy_paas != false }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Resource Groups Only:** ${{ inputs.resource_group_only }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Cost report has been uploaded as an artifact."
+

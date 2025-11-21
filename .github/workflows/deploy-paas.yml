@@ -1,0 +1,251 @@
+name: Deploy PaaS Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/paas/**'
+      - 'docker/**'
+      - 'sample-app-master/**'
+  workflow_dispatch:
+
+env:
+  TF_VERSION: '1.6.0'
+  IMAGE_NAME: 'sample-app'
+  IMAGE_TAG: 'latest'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run PHP Tests
+        working-directory: sample-app-master
+        run: |
+          # Install PHP and required extensions
+          sudo apt-get update
+          sudo apt-get install -y php8.2 php8.2-xml php8.2-mbstring php8.2-curl php8.2-zip php8.2-mysql php8.2-sqlite3
+          
+          # Install Composer
+          curl -sS https://getcomposer.org/installer | php
+          sudo mv composer.phar /usr/local/bin/composer
+          
+          # Install dependencies
+          composer install --no-interaction --prefer-dist --optimize-autoloader
+          
+          # Copy .env.example to .env if .env doesn't exist (for testing)
+          if [ ! -f .env ]; then
+            cp .env.example .env 2>/dev/null || echo "APP_ENV=testing" > .env
+            php artisan key:generate --force || true
+          fi
+          
+          # Run PHPUnit tests
+          php artisan test --env=testing || vendor/bin/phpunit
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Install Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      - name: Azure Login
+        id: azure_login
+        run: |
+          # Extraire les credentials depuis le secret JSON
+          CREDENTIALS='${{ secrets.AZURE_CREDENTIALS }}'
+          CLIENT_ID=$(echo "$CREDENTIALS" | grep -o '"clientId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          CLIENT_SECRET=$(echo "$CREDENTIALS" | grep -o '"clientSecret"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          TENANT_ID=$(echo "$CREDENTIALS" | grep -o '"tenantId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          SUBSCRIPTION_ID=$(echo "$CREDENTIALS" | grep -o '"subscriptionId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          
+          echo "::add-mask::$CLIENT_SECRET"
+          
+          # Connexion Azure avec Service Principal
+          az login --service-principal \
+            --username "$CLIENT_ID" \
+            --password "$CLIENT_SECRET" \
+            --tenant "$TENANT_ID"
+          
+          # Définir l'abonnement actif
+          az account set --subscription "$SUBSCRIPTION_ID"
+          
+          # Vérifier la connexion
+          az account show
+          
+          # Sauvegarder l'ID d'abonnement pour Terraform
+          echo "subscription_id=$SUBSCRIPTION_ID" >> $GITHUB_OUTPUT
+          echo "ARM_SUBSCRIPTION_ID=$SUBSCRIPTION_ID" >> $GITHUB_ENV
+          echo "ARM_CLIENT_ID=$CLIENT_ID" >> $GITHUB_ENV
+          echo "ARM_CLIENT_SECRET=$CLIENT_SECRET" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=$TENANT_ID" >> $GITHUB_ENV
+
+      - name: Terraform Init
+        working-directory: terraform/paas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: terraform/paas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        run: terraform validate
+
+      - name: Get ACR Info from Terraform State
+        id: acr_info
+        working-directory: terraform/paas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        run: |
+          # Try to get ACR info from existing state or create new
+          ACR_NAME=$(terraform output -raw acr_name 2>/dev/null || echo "")
+          ACR_SERVER=$(terraform output -raw acr_login_server 2>/dev/null || echo "")
+          
+          if [ -z "$ACR_NAME" ] || [ -z "$ACR_SERVER" ]; then
+            # If ACR doesn't exist, we need to create it first with Terraform
+            echo "ACR not found in state, will be created by Terraform"
+            echo "acr_name=" >> $GITHUB_OUTPUT
+            echo "acr_server=" >> $GITHUB_OUTPUT
+            echo "acr_exists=false" >> $GITHUB_OUTPUT
+          else
+            echo "ACR found: $ACR_NAME"
+            echo "acr_name=$ACR_NAME" >> $GITHUB_OUTPUT
+            echo "acr_server=$ACR_SERVER" >> $GITHUB_OUTPUT
+            echo "acr_exists=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Terraform Plan (create ACR if needed)
+        id: tf_plan
+        working-directory: terraform/paas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        run: |
+          terraform plan -out=tfplan || terraform plan -out=tfplan
+          echo "plan_created=true" >> $GITHUB_OUTPUT
+
+      - name: Terraform Apply (create infrastructure)
+        working-directory: terraform/paas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        run: |
+          terraform apply -auto-approve tfplan || terraform apply -auto-approve
+
+      - name: Get ACR Login Server
+        id: acr_login_server
+        working-directory: terraform/paas
+        run: |
+          ACR_SERVER=$(terraform output -raw acr_login_server)
+          ACR_NAME=$(terraform output -raw acr_name)
+          echo "acr_server=$ACR_SERVER" >> $GITHUB_OUTPUT
+          echo "acr_name=$ACR_NAME" >> $GITHUB_OUTPUT
+          echo "ACR Login Server: $ACR_SERVER"
+
+      - name: Login to Azure Container Registry
+        run: |
+          ACR_SERVER="${{ steps.acr_login_server.outputs.acr_server }}"
+          
+          # Get ACR admin credentials
+          ACR_USERNAME=$(az acr credential show --name "${{ steps.acr_login_server.outputs.acr_name }}" --query username -o tsv)
+          ACR_PASSWORD=$(az acr credential show --name "${{ steps.acr_login_server.outputs.acr_name }}" --query passwords[0].value -o tsv)
+          
+          echo "::add-mask::$ACR_PASSWORD"
+          
+          # Login to ACR
+          echo "$ACR_PASSWORD" | docker login "$ACR_SERVER" --username "$ACR_USERNAME" --password-stdin
+
+      - name: Build and Push Docker Image
+        working-directory: sample-app-master
+        run: |
+          ACR_SERVER="${{ steps.acr_login_server.outputs.acr_server }}"
+          IMAGE_NAME="${{ env.IMAGE_NAME }}"
+          IMAGE_TAG="${{ env.IMAGE_TAG }}"
+          FULL_IMAGE_NAME="${ACR_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+          
+          echo "Building Docker image: $FULL_IMAGE_NAME"
+          
+          # Build the image
+          docker build -t "$FULL_IMAGE_NAME" .
+          
+          # Push the image to ACR
+          echo "Pushing image to ACR..."
+          docker push "$FULL_IMAGE_NAME"
+          
+          echo "Image pushed successfully: $FULL_IMAGE_NAME"
+
+      - name: Terraform Apply (update Web App with new image)
+        working-directory: terraform/paas
+        env:
+          ARM_SUBSCRIPTION_ID: ${{ steps.azure_login.outputs.subscription_id }}
+        run: |
+          # Apply again to update the Web App if needed
+          terraform apply -auto-approve
+
+      - name: Get Web App URL
+        id: webapp_url
+        working-directory: terraform/paas
+        run: |
+          WEBAPP_URL=$(terraform output -raw webapp_url)
+          echo "webapp_url=$WEBAPP_URL" >> $GITHUB_OUTPUT
+          echo "Web App URL: https://$WEBAPP_URL"
+
+      - name: Wait for application to be ready
+        run: |
+          WEBAPP_URL="${{ steps.webapp_url.outputs.webapp_url }}"
+          echo "Waiting for application to start at https://$WEBAPP_URL..."
+          
+          for i in {1..30}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://$WEBAPP_URL" || echo "000")
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
+              echo "Application is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: Application not ready yet (HTTP $HTTP_CODE), waiting 10 seconds..."
+            sleep 10
+          done
+          
+          echo "Application did not become ready in time"
+          exit 1
+
+      - name: Run Smoke Tests
+        run: |
+          WEBAPP_URL="${{ steps.webapp_url.outputs.webapp_url }}"
+          FULL_URL="https://$WEBAPP_URL"
+          echo "Running smoke tests against $FULL_URL"
+          
+          # Test 1: Homepage returns 200 or 302
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$FULL_URL")
+          echo "Homepage HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "302" ]; then
+            echo "ERROR: Homepage returned $HTTP_CODE instead of 200 or 302"
+            exit 1
+          fi
+          
+          # Test 2: API endpoint (if exists)
+          API_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$FULL_URL/api" || echo "000")
+          echo "API HTTP status: $API_CODE"
+          
+          # Test 3: Response time check
+          RESPONSE_TIME=$(curl -s -o /dev/null -w "%{time_total}" "$FULL_URL")
+          echo "Response time: ${RESPONSE_TIME}s"
+          RESPONSE_MS=$(echo "$RESPONSE_TIME * 1000" | awk '{printf "%.0f", $1}')
+          if [ "$RESPONSE_MS" -gt 5000 ]; then
+            echo "WARNING: Response time is slow (${RESPONSE_TIME}s)"
+          fi
+          
+          echo "All smoke tests passed!"
+
+      - name: Cleanup Terraform files
+        if: always()
+        working-directory: terraform/paas
+        run: |
+          rm -f tfplan
+          rm -rf .terraform
+
