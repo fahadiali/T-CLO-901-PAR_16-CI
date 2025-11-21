@@ -16,15 +16,16 @@ env:
   IMAGE_TAG: 'latest'
 
 jobs:
-  deploy:
+  test:
+    name: Run PHP Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run PHP Tests
+      - name: Setup PHP
         working-directory: sample-app-master
         run: |
           # Add PHP repository (Ondrej PPA)
@@ -35,22 +36,41 @@ jobs:
           
           # Install PHP 8.2 and required extensions
           sudo apt-get install -y php8.2 php8.2-xml php8.2-mbstring php8.2-curl php8.2-zip php8.2-mysql php8.2-sqlite3 php8.2-cli php8.2-common
-          
-          # Install Composer
+
+      - name: Install Composer
+        working-directory: sample-app-master
+        run: |
           curl -sS https://getcomposer.org/installer | php
           sudo mv composer.phar /usr/local/bin/composer
-          
-          # Install dependencies
+
+      - name: Install Dependencies
+        working-directory: sample-app-master
+        run: |
           composer install --no-interaction --prefer-dist --optimize-autoloader
-          
+
+      - name: Prepare Test Environment
+        working-directory: sample-app-master
+        run: |
           # Copy .env.example to .env if .env doesn't exist (for testing)
           if [ ! -f .env ]; then
             cp .env.example .env 2>/dev/null || echo "APP_ENV=testing" > .env
             php artisan key:generate --force || true
           fi
-          
-          # Run PHPUnit tests
+
+      - name: Run PHPUnit Tests
+        working-directory: sample-app-master
+        run: |
           php artisan test --env=testing || vendor/bin/phpunit
+
+  deploy:
+    name: Deploy to PaaS
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -275,4 +295,3 @@ jobs:
         run: |
           rm -f tfplan
           rm -rf .terraform
-
