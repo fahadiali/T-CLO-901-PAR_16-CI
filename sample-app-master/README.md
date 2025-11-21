@@ -30,3 +30,7 @@ php artisan migrate
 ```bash
 php artisan db:seed
 ```
+
+## Déploiement CI/CD
+
+Les workflows GitHub Actions sont configurés pour déployer automatiquement l'application.
