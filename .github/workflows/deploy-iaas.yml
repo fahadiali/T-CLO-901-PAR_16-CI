@@ -9,6 +9,7 @@ on:
       - 'docker/**'
       - 'sample-app-master/**'
       - 'ansible/**'
+  workflow_dispatch:
 
 env:
   TF_VERSION: '1.6.0'
