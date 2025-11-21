@@ -34,3 +34,7 @@ php artisan db:seed
 ## Déploiement CI/CD
 
 Les workflows GitHub Actions sont configurés pour déployer automatiquement l'application.
+
+- Tests PHP avant déploiement
+- Déploiement automatique sur IaaS et PaaS
+- Tests de charge automatisés
