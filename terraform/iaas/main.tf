@@ -10,19 +10,36 @@ terraform {
       source  = "hashicorp/random"
       version = ">= 3.6.0"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = ">= 3.2.0"
+    }
   }
 }
 
 provider "azurerm" {
   features {}
 
-  subscription_id = var.subscription_id
+  # Utilise l'abonnement actif d'Azure CLI si subscription_id n'est pas fourni
+  subscription_id = var.subscription_id != "" ? var.subscription_id : null
 }
 
-# Resource Group - créé s'il n'existe pas
+# Data source pour récupérer le Resource Group s'il existe
+data "azurerm_resource_group" "target" {
+  count = var.create_resource_group ? 0 : 1
+  name  = var.resource_group_name
+}
+
+# Resource Group - créé seulement si create_resource_group est true
 resource "azurerm_resource_group" "target" {
+  count    = var.create_resource_group ? 1 : 0
   name     = var.resource_group_name
   location = "francecentral"
+}
+
+# Local pour utiliser le RG existant ou créé
+locals {
+  resource_group = var.create_resource_group ? azurerm_resource_group.target[0] : data.azurerm_resource_group.target[0]
 }
 
 resource "random_string" "suffix" {
@@ -36,30 +53,30 @@ resource "random_string" "suffix" {
 # Réseau
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-${random_string.suffix.result}"
-  location            = azurerm_resource_group.target.location
-  resource_group_name = azurerm_resource_group.target.name
+  location            = local.resource_group.location
+  resource_group_name = local.resource_group.name
   address_space       = ["10.10.0.0/16"]
 }
 
 resource "azurerm_subnet" "subnet" {
   name                 = "subnet-app"
-  resource_group_name  = azurerm_resource_group.target.name
+  resource_group_name  = local.resource_group.name
   virtual_network_name = azurerm_virtual_network.vnet.name
   address_prefixes     = ["10.10.1.0/24"]
 }
 
 resource "azurerm_public_ip" "vm" {
   name                = "pip-vm-${random_string.suffix.result}"
-  location            = azurerm_resource_group.target.location
-  resource_group_name = azurerm_resource_group.target.name
+  location            = local.resource_group.location
+  resource_group_name = local.resource_group.name
   allocation_method   = "Static"
   sku                 = "Standard"
 }
 
 resource "azurerm_network_security_group" "vm" {
   name                = "nsg-vm-${random_string.suffix.result}"
-  location            = azurerm_resource_group.target.location
-  resource_group_name = azurerm_resource_group.target.name
+  location            = local.resource_group.location
+  resource_group_name = local.resource_group.name
 
   security_rule {
     name                       = "SSH"
@@ -88,8 +105,8 @@ resource "azurerm_network_security_group" "vm" {
 
 resource "azurerm_network_interface" "vm" {
   name                = "nic-vm-${random_string.suffix.result}"
-  location            = azurerm_resource_group.target.location
-  resource_group_name = azurerm_resource_group.target.name
+  location            = local.resource_group.location
+  resource_group_name = local.resource_group.name
 
   ip_configuration {
     name                          = "ipcfg"
@@ -114,8 +131,8 @@ locals {
 
 resource "azurerm_linux_virtual_machine" "vm" {
   name                = "vm-app-${random_string.suffix.result}"
-  location            = azurerm_resource_group.target.location
-  resource_group_name = azurerm_resource_group.target.name
+  location            = local.resource_group.location
+  resource_group_name = local.resource_group.name
   size                = var.vm_size
 
   admin_username = var.admin_username
@@ -139,6 +156,104 @@ resource "azurerm_linux_virtual_machine" "vm" {
     offer     = "0001-com-ubuntu-server-jammy"
     sku       = "22_04-lts"
     version   = "latest"
+  }
+}
+
+# Déploiement de l'application avec Ansible
+resource "null_resource" "ansible_deploy" {
+  depends_on = [
+    azurerm_linux_virtual_machine.vm,
+    azurerm_public_ip.vm
+  ]
+
+  triggers = {
+    vm_id     = azurerm_linux_virtual_machine.vm.id
+    public_ip = azurerm_public_ip.vm.ip_address
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command = <<-EOT
+      set -e
+      
+      # Chemins - utiliser le répertoire du module Terraform comme base
+      SCRIPT_DIR="${path.module}"
+      REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+      ANSIBLE_DIR=$REPO_ROOT/ansible
+      PROJECT_PATH=$REPO_ROOT/sample-app-master
+      DOCKER_COMPOSE_PATH=$REPO_ROOT/docker/docker-compose.yml
+      
+      # Variables
+      VM_IP="${azurerm_public_ip.vm.ip_address}"
+      VM_USER="${var.admin_username}"
+      REMOTE_PATH="/opt/sample-app"
+      
+      # Gérer la clé SSH privée
+      SSH_KEY_FILE=""
+      SSH_KEY_TMP=""
+      %{if var.ssh_private_key != ""~}
+      # Créer un fichier de clé SSH temporaire depuis la variable
+      SSH_KEY_TMP=$$(mktemp)
+      cat > "$$SSH_KEY_TMP" <<'SSHKEY'
+${var.ssh_private_key}
+SSHKEY
+      chmod 600 "$$SSH_KEY_TMP"
+      SSH_KEY_FILE=$$SSH_KEY_TMP
+      trap "rm -f $$SSH_KEY_TMP" EXIT
+      %{else~}
+      # Utiliser la clé SSH par défaut
+      SSH_KEY_FILE="${pathexpand("~")}/.ssh/id_rsa"
+      %{endif~}
+      
+      # Attendre que SSH soit disponible
+      echo "Waiting for SSH to be available on $VM_IP..."
+      for i in {1..30}; do
+        if ssh -i "$SSH_KEY_FILE" \
+               -o StrictHostKeyChecking=no \
+               -o ConnectTimeout=5 \
+               -o UserKnownHostsFile=/dev/null \
+               "$VM_USER@$VM_IP" "echo 'SSH ready'" 2>/dev/null; then
+          echo "SSH is ready!"
+          break
+        fi
+        if [ $i -eq 30 ]; then
+          echo "ERROR: SSH not available after 30 attempts"
+          exit 1
+        fi
+        echo "Attempt $i/30: SSH not ready yet, waiting 10 seconds..."
+        sleep 10
+      done
+      
+      # Créer un inventaire Ansible temporaire
+      INVENTORY_FILE=$(mktemp)
+      cat > "$INVENTORY_FILE" <<EOF
+[target]
+vm ansible_host=$VM_IP ansible_user=$VM_USER ansible_ssh_private_key_file=$SSH_KEY_FILE ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+EOF
+      
+      # Exécuter le playbook Ansible
+      echo "Running Ansible playbook..."
+      cd "$ANSIBLE_DIR"
+      ANSIBLE_CONFIG="$ANSIBLE_DIR/ansible.cfg" \
+      ansible-playbook \
+        -i "$INVENTORY_FILE" \
+        "$ANSIBLE_DIR/deploy.yml" \
+        -e "local_project_path=$PROJECT_PATH" \
+        -e "remote_project_path=$REMOTE_PATH" \
+        -e "docker_compose_path=$DOCKER_COMPOSE_PATH" \
+        -v
+      
+      # Nettoyer
+      rm -f "$INVENTORY_FILE"
+      if [ -n "$SSH_KEY_TMP" ]; then
+        rm -f "$SSH_KEY_TMP"
+      fi
+    EOT
+
+    environment = {
+      ANSIBLE_HOST_KEY_CHECKING = "False"
+      ANSIBLE_SSH_PIPELINING    = "True"
+    }
   }
 }
 

@@ -8,6 +8,7 @@ on:
       - 'terraform/iaas/**'
       - 'docker/**'
       - 'sample-app-master/**'
+      - 'ansible/**'
 
 env:
   TF_VERSION: '1.6.0'
@@ -29,6 +30,12 @@ jobs:
       - name: Install Azure CLI
         run: |
           curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          pip3 install ansible
 
       - name: Azure Login
         id: azure_login

@@ -10,3 +10,8 @@ output "ssh_command" {
   value       = "ssh -i ~/.ssh/id_rsa ${var.admin_username}@${azurerm_public_ip.vm.ip_address}"
 }
 
+output "application_url" {
+  description = "URL complète de l'application déployée"
+  value       = "http://${azurerm_public_ip.vm.ip_address}"
+}
+

@@ -61,7 +61,28 @@ unzip terraform_1.6.0_linux_amd64.zip
 sudo mv terraform /usr/local/bin/
 ```
 
-### 5. Clés SSH
+### 5. Installer Ansible
+
+Le projet utilise Ansible pour déployer l'application sur la VM après sa création.
+
+Sur macOS :
+```bash
+brew install ansible
+```
+
+Sur Linux :
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-pip
+pip3 install ansible
+```
+
+Vérifiez l'installation :
+```bash
+ansible-playbook --version
+```
+
+### 6. Clés SSH
 
 Le projet utilise automatiquement vos clés SSH locales (`~/.ssh/id_rsa.pub` et `~/.ssh/id_rsa`).
 
@@ -101,7 +122,14 @@ Cette commande affiche ce qui va être créé sans le créer réellement.
 terraform apply
 ```
 
-Tapez `yes` quand Terraform vous le demande. Le déploiement prend environ 5-10 minutes.
+Tapez `yes` quand Terraform vous le demande. Terraform utilisera automatiquement l'abonnement actif d'Azure CLI (celui configuré avec `az account set`).
+
+Le déploiement prend environ 10-15 minutes :
+- 2-5 min : Création de l'infrastructure Azure (VM, réseau, etc.)
+- 1-2 min : Attente que SSH soit disponible
+- 5-8 min : Ansible installe Docker et déploie l'application
+
+**Important** : Ansible sera appelé automatiquement par Terraform après la création de la VM. Assurez-vous qu'Ansible est installé (voir prérequis).
 
 ### Étape 5 : Récupérer l'adresse IP publique
 
@@ -109,9 +137,62 @@ Une fois le déploiement terminé, Terraform affiche l'adresse IP publique. Vous
 
 ```bash
 terraform output public_ip
+terraform output application_url
 ```
 
 Accédez à votre application dans votre navigateur : `http://VOTRE_IP_PUBLIQUE`
+
+## Tester le déploiement
+
+### Test rapide après déploiement
+
+1. **Vérifier que l'application répond** :
+```bash
+PUBLIC_IP=$(terraform output -raw public_ip)
+curl -I http://$PUBLIC_IP
+```
+Vous devriez voir un code HTTP `200` ou `302`.
+
+2. **Tester dans le navigateur** :
+Ouvrez `http://VOTRE_IP_PUBLIQUE` dans votre navigateur. Vous devriez voir la page d'accueil Laravel.
+
+3. **Vérifier les conteneurs Docker** (optionnel) :
+```bash
+SSH_CMD=$(terraform output -raw ssh_command)
+$SSH_CMD "docker ps"
+```
+Vous devriez voir les conteneurs `app-web` et `app-mysql` en cours d'exécution.
+
+### Test manuel d'Ansible (pour déboguer)
+
+Si le déploiement automatique échoue, vous pouvez tester Ansible manuellement :
+
+```bash
+# Récupérer l'IP de la VM
+PUBLIC_IP=$(terraform output -raw public_ip)
+
+# Exécuter Ansible manuellement
+cd ansible
+./deploy.sh "ssh -i ~/.ssh/id_rsa azureuser@$PUBLIC_IP"
+```
+
+### Vérifier les logs
+
+Si quelque chose ne fonctionne pas, vérifiez les logs :
+
+```bash
+# Se connecter à la VM
+SSH_CMD=$(terraform output -raw ssh_command)
+$SSH_CMD
+
+# Une fois connecté, vérifier les conteneurs
+docker ps
+docker logs app-web
+docker logs app-mysql
+
+# Vérifier que l'application tourne
+curl localhost
+```
 
 ## Structure du projet
 
@@ -147,6 +228,7 @@ Ce dossier contient la configuration Terraform pour créer l'infrastructure Azur
 **Sorties** :
 - `public_ip` : L'adresse IP publique de la VM
 - `ssh_command` : La commande SSH pour se connecter à la VM
+- `application_url` : URL complète de l'application (`http://IP_PUBLIQUE`)
 
 #### `env.tpl`
 **Rôle** : Template pour le fichier `.env` de Laravel.
@@ -182,25 +264,34 @@ Contient le code source de l'application Laravel.
 
 ## Comment ça fonctionne ?
 
-### 1. Création de la VM
-Terraform crée une VM Ubuntu et utilise `cloud-init` pour installer Docker automatiquement au démarrage.
+### 1. Création de l'infrastructure
+Terraform crée l'infrastructure Azure :
+- Resource Group
+- Réseau virtuel (VNet) et sous-réseau
+- Adresse IP publique
+- Groupe de sécurité réseau (NSG) avec règles SSH (22) et HTTP (80)
+- Machine virtuelle Ubuntu 22.04 LTS
 
-### 2. Upload du code
-Une fois la VM créée, Terraform :
-- Se connecte en SSH à la VM
-- Upload le dossier `sample-app-master/` (le code de l'application)
-- Upload le fichier `docker-compose.yml`
-- Crée le fichier `.env` depuis le template
+### 2. Déploiement automatique avec Ansible
+Une fois la VM créée, Terraform appelle automatiquement Ansible via un provisioner `local-exec` :
 
-### 3. Lancement des conteneurs
-Terraform exécute ensuite :
-```bash
-docker compose build    # Construit les images Docker
-docker compose up -d    # Lance les conteneurs en arrière-plan
-```
+1. **Attente SSH** : Terraform attend que la VM soit accessible en SSH (jusqu'à 5 minutes)
+2. **Exécution d'Ansible** : Le playbook `ansible/deploy.yml` est exécuté automatiquement :
+   - Installation de Docker et docker-compose-plugin
+   - Copie du code de l'application (`sample-app-master/`) vers `/opt/sample-app` sur la VM
+   - Copie du fichier `docker-compose.yml` depuis `docker/` vers la VM
+   - Lancement des conteneurs Docker :
+     ```bash
+     docker compose up -d db      # Démarre la base de données
+     # Attente que MySQL soit prêt
+     docker compose run --rm app php artisan migrate --force  # Migrations
+     docker compose up -d         # Démarre l'application
+     ```
 
-### 4. Accès à l'application
+### 3. Accès à l'application
 L'application est accessible via l'adresse IP publique sur le port 80 (HTTP).
+
+**Note** : Le déploiement complet prend environ 10-15 minutes (création infrastructure + déploiement Ansible).
 
 ## Supprimer les ressources
 
@@ -253,22 +344,24 @@ Le workflow `.github/workflows/deploy-iaas.yml` s'exécute automatiquement à ch
 - Les fichiers Terraform (`terraform/iaas/**`)
 - La configuration Docker (`docker/**`)
 - Le code de l'application (`sample-app-master/**`)
+- Les playbooks Ansible (`ansible/**`)
 
 **Étapes du workflow** :
 
 1. **Connexion Azure** : Se connecte à Azure avec le Service Principal via Azure CLI
-2. **Génération de clés SSH** : Génère automatiquement des clés SSH pour la VM
-3. **Formatage Terraform** : Formate automatiquement les fichiers Terraform
-4. **Terraform Init** : Initialise Terraform
-5. **Terraform Validate** : Valide la syntaxe Terraform
-6. **Terraform Plan** : Génère le plan de déploiement
-7. **Terraform Apply** : Déploie l'infrastructure (crée le Resource Group, la VM, le réseau, etc.)
-8. **Attente de l'application** : Attend que l'application soit prête (jusqu'à 5 minutes)
-9. **Smoke Tests** : Vérifie que l'application répond correctement
-   - Test de la page d'accueil (HTTP 200 ou 302)
-   - Test de l'API (si disponible)
-   - Vérification du temps de réponse
-10. **Nettoyage** : Nettoie les fichiers Terraform locaux
+2. **Installation d'Ansible** : Installe Ansible pour le déploiement
+3. **Génération de clés SSH** : Génère automatiquement des clés SSH pour la VM
+4. **Formatage Terraform** : Formate automatiquement les fichiers Terraform
+5. **Terraform Init** : Initialise Terraform
+6. **Terraform Validate** : Valide la syntaxe Terraform
+7. **Terraform Plan** : Génère le plan de déploiement
+8. **Terraform Apply** : Déploie l'infrastructure et appelle automatiquement Ansible pour déployer l'application
+9. **Attente de l'application** : Attend que l'application soit prête (jusqu'à 5 minutes)
+10. **Smoke Tests** : Vérifie que l'application répond correctement
+    - Test de la page d'accueil (HTTP 200 ou 302)
+    - Test de l'API (si disponible)
+    - Vérification du temps de réponse
+11. **Nettoyage** : Nettoie les fichiers Terraform locaux
 
 **Durée totale** : Environ 10-15 minutes (déploiement + tests)
 

@@ -6,9 +6,15 @@
 # Permissions Service Principal ajoutées
 # Relance CI après nettoyage
 variable "resource_group_name" {
-  description = "Nom du Resource Group existant où déployer la VM"
+  description = "Nom du Resource Group où déployer la VM"
   type        = string
   default     = "rg-par_16"
+}
+
+variable "create_resource_group" {
+  description = "Créer le Resource Group s'il n'existe pas. Si false, utilise un Resource Group existant."
+  type        = bool
+  default     = false
 }
 
 variable "admin_username" {
@@ -38,5 +44,6 @@ variable "vm_size" {
 
 variable "subscription_id" {
   type        = string
-  description = "Azure subscription ID."
+  description = "Azure subscription ID. Si non spécifié, utilise l'abonnement actif d'Azure CLI."
+  default     = ""
 }

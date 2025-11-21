@@ -42,11 +42,27 @@ services:
       - "80:80"
     networks:
       - appnet
-    # Génère la clé, exécute les migrations puis lance Apache
+    # Crée un .env minimal si nécessaire, génère APP_KEY, puis lance l'application
     command: >-
-      bash -lc "
-      php artisan key:generate --force || true &&
-      php artisan migrate --force || true &&
+      bash -c "
+      if [ ! -f /var/www/html/.env ]; then
+        cat > /var/www/html/.env <<'ENVEOF'
+      APP_ENV=production
+      APP_DEBUG=false
+      APP_KEY=
+      DB_CONNECTION=mysql
+      DB_HOST=db
+      DB_PORT=3306
+      DB_DATABASE=laravel
+      DB_USERNAME=laravel
+      DB_PASSWORD=secret
+      ENVEOF
+        chown www-data:www-data /var/www/html/.env
+        chmod 600 /var/www/html/.env
+      fi
+      php artisan key:generate --force || true
+      php artisan config:cache
+      php artisan migrate --force || true
       apache2-foreground
       "
 

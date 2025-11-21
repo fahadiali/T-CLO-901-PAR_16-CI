@@ -6,6 +6,7 @@
   vars:
     remote_project_path: /opt/sample-app
     local_project_path: "{{ playbook_dir | dirname }}/sample-app-master"
+    docker_compose_path: "{{ docker_compose_path | default(playbook_dir | dirname + '/docker/docker-compose.yml') }}"
 
   pre_tasks:
     - name: Ensure local project path exists
@@ -23,6 +24,22 @@
       fail:
         msg: "Local project not found. Override local_project_path if needed."
       when: not project_path.stat.exists
+
+    - name: Ensure docker-compose.yml path exists
+      delegate_to: localhost
+      run_once: true
+      become: false
+      stat:
+        path: "{{ docker_compose_path }}"
+      register: docker_compose_file
+
+    - name: Abort when docker-compose.yml is missing
+      delegate_to: localhost
+      run_once: true
+      become: false
+      fail:
+        msg: "Docker compose file not found at {{ docker_compose_path }}. Override docker_compose_path if needed."
+      when: not docker_compose_file.stat.exists
 
   tasks:
     - name: Refresh apt cache
@@ -55,6 +72,20 @@
         owner: root
         group: root
         mode: preserve
+
+    - name: Copy docker-compose.yml to the VM
+      copy:
+        src: "{{ docker_compose_path }}"
+        dest: "{{ remote_project_path }}/docker-compose.yml"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Fix docker-compose.yml build context
+      replace:
+        path: "{{ remote_project_path }}/docker-compose.yml"
+        regexp: 'context: \./sample-app-master'
+        replace: 'context: .'
 
     - name: Stop previous stack and remove orphans
       shell: docker compose down --remove-orphans
