@@ -33,12 +33,30 @@ jobs:
       - name: Azure Login
         id: azure_login
         run: |
-          # Extraire les credentials depuis le secret JSON
+          # Install jq for JSON parsing
+          sudo apt-get update
+          sudo apt-get install -y jq
+          
+          # Extraire les credentials depuis le secret JSON avec jq
           CREDENTIALS='${{ secrets.AZURE_CREDENTIALS }}'
-          CLIENT_ID=$(echo "$CREDENTIALS" | grep -o '"clientId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
-          CLIENT_SECRET=$(echo "$CREDENTIALS" | grep -o '"clientSecret"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
-          TENANT_ID=$(echo "$CREDENTIALS" | grep -o '"tenantId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
-          SUBSCRIPTION_ID=$(echo "$CREDENTIALS" | grep -o '"subscriptionId"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+          
+          # Vérifier que le secret existe et n'est pas vide
+          if [ -z "$CREDENTIALS" ]; then
+            echo "ERROR: AZURE_CREDENTIALS secret is empty or not set"
+            exit 1
+          fi
+          
+          # Parser le JSON avec jq
+          CLIENT_ID=$(echo "$CREDENTIALS" | jq -r '.clientId // empty')
+          CLIENT_SECRET=$(echo "$CREDENTIALS" | jq -r '.clientSecret // empty')
+          TENANT_ID=$(echo "$CREDENTIALS" | jq -r '.tenantId // empty')
+          SUBSCRIPTION_ID=$(echo "$CREDENTIALS" | jq -r '.subscriptionId // empty')
+          
+          # Vérifier que tous les champs sont présents
+          if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ] || [ -z "$TENANT_ID" ] || [ -z "$SUBSCRIPTION_ID" ]; then
+            echo "ERROR: Missing required credentials in AZURE_CREDENTIALS"
+            exit 1
+          fi
           
           echo "::add-mask::$CLIENT_SECRET"
           
