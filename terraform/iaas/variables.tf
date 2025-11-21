@@ -33,6 +33,10 @@ variable "ssh_private_key" {
 variable "vm_size" {
   description = "Taille de la VM Azure"
   type        = string
-  default     = "Standard_B1s"
+  default     = "Standard_B2ms"
 }
 
+variable "subscription_id" {
+  type        = string
+  description = "Azure subscription ID."
+}

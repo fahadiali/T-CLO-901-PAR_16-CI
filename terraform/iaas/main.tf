@@ -10,15 +10,13 @@ terraform {
       source  = "hashicorp/random"
       version = ">= 3.6.0"
     }
-    null = {
-      source  = "hashicorp/null"
-      version = ">= 3.2.0"
-    }
   }
 }
 
 provider "azurerm" {
   features {}
+
+  subscription_id = var.subscription_id
 }
 
 # Resource Group - créé s'il n'existe pas
@@ -106,39 +104,12 @@ resource "azurerm_network_interface_security_group_association" "vm" {
   network_security_group_id = azurerm_network_security_group.vm.id
 }
 
-# Lecture automatique des clés SSH depuis ~/.ssh/id_rsa.pub et ~/.ssh/id_rsa
+# Lecture automatique des clés SSH depuis ~/.ssh/id_rsa.pub
 locals {
   ssh_public_key_content = coalesce(
     var.ssh_public_key,
     try(file("${pathexpand("~")}/.ssh/id_rsa.pub"), "")
   )
-  ssh_private_key_content = coalesce(
-    var.ssh_private_key,
-    try(file("${pathexpand("~")}/.ssh/id_rsa"), "")
-  )
-
-  cloud_init = <<-EOF
-    #cloud-config
-    package_update: true
-    package_upgrade: true
-    packages:
-      - ca-certificates
-      - curl
-      - gnupg
-    runcmd:
-      - |
-        install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        chmod a+r /etc/apt/keyrings/docker.gpg
-        . /etc/os-release
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
-        apt-get update
-        apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-      - usermod -aG docker ${var.admin_username}
-      - systemctl enable docker
-      - systemctl start docker
-      - mkdir -p /opt/app
-  EOF
 }
 
 resource "azurerm_linux_virtual_machine" "vm" {
@@ -160,7 +131,7 @@ resource "azurerm_linux_virtual_machine" "vm" {
 
   os_disk {
     caching              = "ReadWrite"
-    storage_account_type = "Standard_LRS"
+    storage_account_type = "Premium_LRS"
   }
 
   source_image_reference {
@@ -168,57 +139,6 @@ resource "azurerm_linux_virtual_machine" "vm" {
     offer     = "0001-com-ubuntu-server-jammy"
     sku       = "22_04-lts"
     version   = "latest"
-  }
-
-  custom_data = base64encode(local.cloud_init)
-}
-
-resource "null_resource" "deploy_app" {
-  depends_on = [azurerm_linux_virtual_machine.vm]
-
-  triggers = {
-    compose_hash = filemd5("${path.module}/../../docker/docker-compose.yml")
-  }
-
-  connection {
-    type        = "ssh"
-    host        = azurerm_public_ip.vm.ip_address
-    user        = var.admin_username
-    private_key = local.ssh_private_key_content
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "sudo mkdir -p /opt/app",
-      "sudo chown ${var.admin_username}:${var.admin_username} /opt/app",
-      "sudo rm -rf /opt/app/sample-app-master"
-    ]
-  }
-
-  provisioner "file" {
-    source      = "${path.module}/../../docker/docker-compose.yml"
-    destination = "/opt/app/docker-compose.yml"
-  }
-
-  provisioner "file" {
-    source      = "${path.module}/../../sample-app-master"
-    destination = "/opt/app/sample-app-master"
-  }
-
-  provisioner "file" {
-    content     = file("${path.module}/env.tpl")
-    destination = "/opt/app/sample-app-master/.env"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "echo 'Attente de l installation de Docker (jusqu à 5 minutes)...'",
-      "sleep 120",
-      "until command -v docker >/dev/null 2>&1; do echo 'Attente Docker...'; sleep 10; done",
-      "echo 'Docker est installé'",
-      "cd /opt/app && sudo docker compose build",
-      "cd /opt/app && sudo docker compose up -d"
-    ]
   }
 }
 
