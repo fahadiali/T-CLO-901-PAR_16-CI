@@ -123,6 +123,14 @@ jobs:
           QUEUE_CONNECTION: sync
           MAIL_MAILER: array
         run: |
+          # Clear config cache to ensure new .env is loaded
+          php artisan config:clear || true
+          
+          # Verify .env file content
+          echo "Checking .env file:"
+          grep -E "DB_CONNECTION|DB_DATABASE" .env || echo "DB config not found in .env"
+          
+          # Run tests - RefreshDatabase trait will handle migrations automatically
           php artisan test --env=testing || vendor/bin/phpunit
 
   deploy:
