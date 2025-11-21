@@ -196,54 +196,56 @@ jobs:
           echo "Using image: $FULL_IMAGE_NAME"
           
           # Update docker-compose.yml on VM with new image and deploy
+          REGISTRY_TYPE="${{ steps.registry_login.outputs.registry_type }}"
+          REGISTRY_URL="${{ steps.registry_login.outputs.registry_url }}"
+          ACR_NAME="${{ steps.acr_info.outputs.acr_name }}"
+          
           ssh -i ~/.ssh/deploy_key \
               -o StrictHostKeyChecking=no \
               -o ConnectTimeout=10 \
-              "$VM_USER@$PUBLIC_IP" << ENDSSH
-            set -e
-            
+              "$VM_USER@$PUBLIC_IP" bash -c "set -e
             # Find docker-compose.yml location
-            COMPOSE_FILE="/opt/docker-compose.yml"
-            if [ ! -f "$COMPOSE_FILE" ]; then
-              COMPOSE_FILE="\$(find /opt -name docker-compose.yml 2>/dev/null | head -1)"
+            COMPOSE_FILE=\"/opt/docker-compose.yml\"
+            if [ ! -f \"\$COMPOSE_FILE\" ]; then
+              COMPOSE_FILE=\$(find /opt -name docker-compose.yml 2>/dev/null | head -1)
             fi
             
-            if [ -z "$COMPOSE_FILE" ] || [ ! -f "$COMPOSE_FILE" ]; then
-              echo "ERROR: docker-compose.yml not found"
+            if [ -z \"\$COMPOSE_FILE\" ] || [ ! -f \"\$COMPOSE_FILE\" ]; then
+              echo \"ERROR: docker-compose.yml not found\"
               exit 1
             fi
             
-            echo "Found docker-compose.yml at: $COMPOSE_FILE"
-            cd "\$(dirname \$COMPOSE_FILE)"
+            echo \"Found docker-compose.yml at: \$COMPOSE_FILE\"
+            cd \"\$(dirname \$COMPOSE_FILE)\"
             
             # Login to registry on VM if ACR
-            if [ "${{ steps.registry_login.outputs.registry_type }}" = "acr" ]; then
-              ACR_SERVER="${{ steps.registry_login.outputs.registry_url }}"
-              echo "Logging into ACR on VM..."
+            if [ \"$REGISTRY_TYPE\" = \"acr\" ]; then
+              ACR_SERVER=\"$REGISTRY_URL\"
+              echo \"Logging into ACR on VM...\"
               
               # Get ACR credentials
-              ACR_USERNAME=\$(az acr credential show --name "${{ steps.acr_info.outputs.acr_name }}" --query username -o tsv)
-              ACR_PASSWORD=\$(az acr credential show --name "${{ steps.acr_info.outputs.acr_name }}" --query passwords[0].value -o tsv)
+              ACR_USERNAME=\$(az acr credential show --name \"$ACR_NAME\" --query username -o tsv)
+              ACR_PASSWORD=\$(az acr credential show --name \"$ACR_NAME\" --query passwords[0].value -o tsv)
               
-              echo "\$ACR_PASSWORD" | sudo docker login "\$ACR_SERVER" --username "\$ACR_USERNAME" --password-stdin || true
+              echo \"\$ACR_PASSWORD\" | sudo docker login \"\$ACR_SERVER\" --username \"\$ACR_USERNAME\" --password-stdin || true
             fi
             
             # Update docker-compose.yml to use the new image
-            echo "Updating docker-compose.yml with new image: $FULL_IMAGE_NAME"
+            echo \"Updating docker-compose.yml with new image: $FULL_IMAGE_NAME\"
             
             # Create backup
-            cp "\$COMPOSE_FILE" "\${COMPOSE_FILE}.backup"
+            cp \"\$COMPOSE_FILE\" \"\${COMPOSE_FILE}.backup\"
             
             # Update image in docker-compose.yml using sed
             # This updates the image under the app service
-            sudo sed -i "s|image:.*sample-app.*|image: $FULL_IMAGE_NAME|g" "\$COMPOSE_FILE" || true
-            sudo sed -i "s|build:.*sample-app-master.*|image: $FULL_IMAGE_NAME|g" "\$COMPOSE_FILE" || true
+            sudo sed -i \"s|image:.*sample-app.*|image: $FULL_IMAGE_NAME|g\" \"\$COMPOSE_FILE\" || true
+            sudo sed -i \"s|build:.*sample-app-master.*|image: $FULL_IMAGE_NAME|g\" \"\$COMPOSE_FILE\" || true
             
             # Pull new image and restart containers
-            echo "Pulling new image..."
-            sudo docker compose pull app || docker compose pull app || echo "Pull command not available, using up --build"
+            echo \"Pulling new image...\"
+            sudo docker compose pull app || docker compose pull app || echo \"Pull command not available, using up --build\"
             
-            echo "Restarting containers..."
+            echo \"Restarting containers...\"
             sudo docker compose up -d
             
             # Wait a moment
@@ -252,8 +254,7 @@ jobs:
             # Check container status
             sudo docker compose ps
             
-            echo "Deployment completed!"
-ENDSSH
+            echo \"Deployment completed!\""
 
       - name: Wait for application to be ready
         run: |

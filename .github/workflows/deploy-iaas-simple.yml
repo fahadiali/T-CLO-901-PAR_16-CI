@@ -141,36 +141,34 @@ jobs:
           ssh -i ~/.ssh/deploy_key \
               -o StrictHostKeyChecking=no \
               -o ConnectTimeout=10 \
-              "$VM_USER@$PUBLIC_IP" << 'ENDSSH'
-            set -e
-            
-            REMOTE_PATH="/opt/sample-app"
+              "$VM_USER@$PUBLIC_IP" bash -c "set -e
+            REMOTE_PATH=\"/opt/sample-app\"
             
             # Check if directory exists and has git repo
-            if [ -d "$REMOTE_PATH" ] && [ -d "$REMOTE_PATH/.git" ]; then
-              echo "Found existing git repository at $REMOTE_PATH"
-              cd "$REMOTE_PATH"
+            if [ -d \"\$REMOTE_PATH\" ] && [ -d \"\$REMOTE_PATH/.git\" ]; then
+              echo \"Found existing git repository at \$REMOTE_PATH\"
+              cd \"\$REMOTE_PATH\"
               
               # Pull latest changes
-              echo "Pulling latest changes..."
-              git pull origin main || git pull || echo "Git pull failed, continuing with existing code"
+              echo \"Pulling latest changes...\"
+              git pull origin main || git pull || echo \"Git pull failed, continuing with existing code\"
             else
-              echo "No git repository found at $REMOTE_PATH, creating directory structure..."
-              sudo mkdir -p "$REMOTE_PATH"
-              sudo chown -R $USER:$USER "$REMOTE_PATH" || true
+              echo \"No git repository found at \$REMOTE_PATH, creating directory structure...\"
+              sudo mkdir -p \"\$REMOTE_PATH\"
+              sudo chown -R \$USER:\$USER \"\$REMOTE_PATH\" || true
             fi
             
             # Check if docker-compose.yml exists
-            if [ ! -f "$REMOTE_PATH/../docker-compose.yml" ]; then
-              echo "ERROR: docker-compose.yml not found. Please deploy first with deploy-iaas.yml"
+            if [ ! -f \"\$REMOTE_PATH/../docker-compose.yml\" ]; then
+              echo \"ERROR: docker-compose.yml not found. Please deploy first with deploy-iaas.yml\"
               exit 1
             fi
             
             # Navigate to docker-compose location (should be /opt/docker-compose.yml based on ansible deploy)
-            cd "$(dirname $(readlink -f $REMOTE_PATH/../docker-compose.yml || echo /opt))"
+            cd \"\$(dirname \$(readlink -f \$REMOTE_PATH/../docker-compose.yml || echo /opt))\"
             
             # Rebuild and restart containers
-            echo "Rebuilding and restarting Docker containers..."
+            echo \"Rebuilding and restarting Docker containers...\"
             docker compose up -d --build
             
             # Wait a moment for containers to start
@@ -179,8 +177,7 @@ jobs:
             # Check container status
             docker compose ps
             
-            echo "Deployment completed!"
-ENDSSH
+            echo \"Deployment completed!\""
 
       - name: Wait for application to be ready
         run: |
